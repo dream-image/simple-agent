@@ -6,6 +6,7 @@ use crate::tools::edit_file::ToolInput as EditFileInput;
 use crate::tools::get_weather::ToolInput as GetWeatherInput;
 use crate::tools::read_file::ReadFile;
 use crate::tools::read_file::ToolInput as ReadFileInput;
+use crate::tools::shell::ToolInput as ShellInput;
 use crate::tools::Tool;
 use anyhow::{anyhow, Context};
 use num_format::{Locale, ToFormattedString};
@@ -17,6 +18,7 @@ use std::sync::LazyLock;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tools::get_weather::GetWeather;
+use crate::tools::shell::Shell;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
@@ -98,11 +100,7 @@ struct InputMessage {
     tool_calls: Option<Vec<ToolCall>>,
 }
 
-#[derive(Serialize)]
-struct AgentReply {
-    content: String,
-    reasoning_content: Option<String>,
-}
+
 
 async fn agent_call(history: &[InputMessage]) -> anyhow::Result<AiResponse> {
     let body_json = json!({
@@ -112,6 +110,7 @@ async fn agent_call(history: &[InputMessage]) -> anyhow::Result<AiResponse> {
             GetWeather::definition(),
             EditFile::definition(),
             ReadFile::definition(),
+            Shell::definition(),
         ]).unwrap()
     });
     let client = Client::new();
@@ -147,6 +146,7 @@ enum ToolsEnum {
     GetWeather(GetWeather),
     EditFile(EditFile),
     ReadFile(ReadFile),
+    Shell(Shell)
 }
 
 static TOOLS_MAP: LazyLock<Mutex<HashMap<String, ToolsEnum>>> =
@@ -162,6 +162,7 @@ async fn agent_init() -> Result<(), String> {
     );
     tools_map.insert(String::from("edit_file"), ToolsEnum::EditFile(EditFile {}));
     tools_map.insert(String::from("read_file"), ToolsEnum::ReadFile(ReadFile {}));
+    tools_map.insert(String::from("shell"), ToolsEnum::Shell(Shell {}));
     Ok(())
 }
 
@@ -180,7 +181,7 @@ async fn delete_session(session_id: &str) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn call(session_id: &str, question: &str) -> Result<AgentReply, String> {
+async fn call(session_id: &str, question: &str) -> Result<InputMessage, String> {
     let mut history = {
         let mut history_map = HISTORY_MAP.lock().await;
         let history = history_map
@@ -257,6 +258,12 @@ async fn call(session_id: &str, question: &str) -> Result<AgentReply, String> {
                             .and_then(|input| read_file.execute(input));
                         tool_result_push(&mut history, result, tool.id.clone());
                     }
+                    ("shell", Some(ToolsEnum::Shell(shell))) => {
+                        let result = serde_json::from_str::<ShellInput>(&tool.function.arguments)
+                        .map_err(|err| anyhow!(err))
+                        .and_then(|input| shell.execute(input));
+                        tool_result_push(&mut history, result, tool.id.clone());
+                    }
                     _ => {
                         tool_result_push(
                             &mut history,
@@ -272,19 +279,17 @@ async fn call(session_id: &str, question: &str) -> Result<AgentReply, String> {
             println!("========================================================================");
             println!("{}", response);
             println!("========================================================================");
-            history.push(InputMessage {
+            let message = InputMessage {
                 role: Role::Assistant,
                 content: Some(response.clone()),
                 reasoning_content: first_content_message.reasoning_content.clone(),
                 tool_call_id: None,
                 tool_calls: None,
-            });
+            };
+            history.push(message.clone());
             let mut history_map = HISTORY_MAP.lock().await;
             history_map.insert(session_id.to_string(), history);
-            return Ok(AgentReply {
-                content: response.clone(),
-                reasoning_content: first_content_message.reasoning_content.clone(),
-            });
+            return Ok(message.clone());
         }
 
         return Err("响应为空".to_string());
