@@ -27,4 +27,7 @@ reqwest = { version = "0.13.3", features = ["json"] }
 tokio = "1.52.3"
 schemars = "0.8.22"
 anyhow = "1.0.102"
+reqwest-sse = "0.2.0"
+tokio-stream = "0.1.18"
+eventsource-stream = "0.2.3"
 

@@ -1,5 +1,6 @@
 import {useEffect, useLayoutEffect, useMemo, useRef, useState} from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { Button, ConfigProvider, Empty } from "antd";
 import type { MenuProps } from "antd";
 import { Bubble, Conversations, Sender, Think, XProvider } from "@ant-design/x";
@@ -12,11 +13,34 @@ type AgentReply = {
   reasoning_content?: string | null;
 };
 
+type AgentStreamEvent = {
+  sessionId: string;
+  data: string;
+};
+
+type AgentToolCallEvent = {
+  sessionId: string;
+  id: string;
+  name: string;
+  arguments: string;
+  content: string;
+  success: boolean;
+};
+
+type ToolCallMessage = {
+  id: string;
+  name: string;
+  arguments: string;
+  content: string;
+  success: boolean;
+};
+
 type ChatMessage = {
   id: string;
   role: "user" | "assistant";
   content: string;
   reasoningContent?: string;
+  toolCalls?: ToolCallMessage[];
   loading?: boolean;
   error?: boolean;
 };
@@ -38,6 +62,17 @@ const createSession = (): ChatSession => ({
 const getErrorMessage = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
 
+const getToolSummary = (content: string) => {
+  const text = content.replace(/\s+/g, " ").trim();
+  if (!text) {
+    return "无输出";
+  }
+  return text.length > 140 ? `${text.slice(0, 140)}...` : text;
+};
+
+const isScrollAtBottom = (element: HTMLDivElement) =>
+  element.scrollHeight - element.scrollTop - element.clientHeight < 8;
+
 function App() {
   const [firstSession] = useState(createSession);
   const [sessions, setSessions] = useState<ChatSession[]>([firstSession]);
@@ -47,6 +82,8 @@ function App() {
   const [ready, setReady] = useState(false);
   const [bootError, setBootError] = useState("");
   const containRef = useRef<HTMLDivElement | null>(null);
+  const streamTargetRef = useRef<Record<string, string>>({});
+  const shouldAutoScrollRef = useRef(true);
 
   useEffect(() => {
     let alive = true;
@@ -74,8 +111,14 @@ function App() {
 
   const activeSession = sessions.find((item) => item.key === activeKey);
   useLayoutEffect(() => {
+    shouldAutoScrollRef.current = true;
     containRef.current?.scrollTo(0, containRef.current.scrollHeight);
-  }, [activeSession]);
+  }, [activeKey]);
+  useLayoutEffect(() => {
+    if (shouldAutoScrollRef.current) {
+      containRef.current?.scrollTo(0, containRef.current.scrollHeight);
+    }
+  }, [activeSession?.messages]);
   const conversationItems = useMemo<ConversationItemType[]>(
     () => sessions.map(({ key, label }) => ({ key, label })),
     [sessions],
@@ -83,20 +126,24 @@ function App() {
 
   const bubbleItems = useMemo<BubbleItemType[]>(
     () =>
-      (activeSession?.messages ?? []).map((message) => ({
-        key: message.id,
-        role: message.role,
-        content: message.content,
-        loading: message.loading,
-        status: message.error
-          ? "error"
-          : message.loading
-            ? "loading"
-            : "success",
-        extraInfo: {
-          reasoningContent: message.reasoningContent,
-        },
-      })),
+      (activeSession?.messages ?? []).map((message) => {
+        const hasVisibleContent = Boolean(
+          message.content || message.reasoningContent || message.toolCalls?.length,
+        );
+        const loading = Boolean(message.loading && !hasVisibleContent);
+
+        return {
+          key: message.id,
+          role: message.role,
+          content: message.content,
+          loading,
+          status: message.error ? "error" : loading ? "loading" : "success",
+          extraInfo: {
+            reasoningContent: message.reasoningContent,
+            toolCalls: message.toolCalls,
+          },
+        };
+      }),
     [activeSession?.messages],
   );
 
@@ -118,6 +165,96 @@ function App() {
       ),
     );
   };
+
+  const handleMessageAreaScroll = () => {
+    const element = containRef.current;
+    if (element) {
+      shouldAutoScrollRef.current = isScrollAtBottom(element);
+    }
+  };
+
+  useEffect(() => {
+    let unlistenStream: (() => void) | undefined;
+    let unlistenToolCall: (() => void) | undefined;
+
+    async function bindEvents() {
+      unlistenStream = await listen<AgentStreamEvent>("agent_stream", (event) => {
+        const { sessionId, data } = event.payload;
+        const messageId = streamTargetRef.current[sessionId];
+
+        if (!messageId || data === "[DONE]") {
+          return;
+        }
+
+        try {
+          const chunk = JSON.parse(data);
+          const delta = chunk?.choices?.[0]?.delta;
+          const content =
+            typeof delta?.content === "string" ? delta.content : "";
+          const reasoningContent =
+            typeof delta?.reasoning_content === "string"
+              ? delta.reasoning_content
+              : "";
+
+          if (!content && !reasoningContent) {
+            return;
+          }
+
+          updateMessage(sessionId, messageId, (message) => ({
+            ...message,
+            content: message.content + content,
+            reasoningContent: `${message.reasoningContent ?? ""}${reasoningContent}`,
+            loading: false,
+          }));
+        } catch {
+          return;
+        }
+      });
+
+      unlistenToolCall = await listen<AgentToolCallEvent>(
+        "agent_tool_call",
+        (event) => {
+          const payload = event.payload;
+          const messageId = streamTargetRef.current[payload.sessionId];
+
+          if (!messageId) {
+            return;
+          }
+
+          updateMessage(payload.sessionId, messageId, (message) => {
+            const toolCalls = [...(message.toolCalls ?? [])];
+            const index = toolCalls.findIndex((item) => item.id === payload.id);
+            const toolCall = {
+              id: payload.id,
+              name: payload.name,
+              arguments: payload.arguments,
+              content: payload.content,
+              success: payload.success,
+            };
+
+            if (index >= 0) {
+              toolCalls[index] = toolCall;
+            } else {
+              toolCalls.push(toolCall);
+            }
+
+            return {
+              ...message,
+              toolCalls,
+              loading: false,
+            };
+          });
+        },
+      );
+    }
+
+    bindEvents();
+
+    return () => {
+      unlistenStream?.();
+      unlistenToolCall?.();
+    };
+  }, []);
 
   const handleMockMessages = () => {
     const sessionId = activeKey;
@@ -207,6 +344,7 @@ function App() {
       loading: true,
     };
 
+    streamTargetRef.current[sessionId] = assistantMessage.id;
     setInput("");
     setLoadingSession(sessionId);
     setSessions((current) =>
@@ -233,20 +371,21 @@ function App() {
         question,
       });
 
-      updateMessage(sessionId, assistantMessage.id, () => ({
-        ...assistantMessage,
-        content: reply.content || "",
-        reasoningContent: reply.reasoning_content || undefined,
+      updateMessage(sessionId, assistantMessage.id, (message) => ({
+        ...message,
+        content: reply.content || message.content,
+        reasoningContent: reply.reasoning_content || message.reasoningContent,
         loading: false,
       }));
     } catch (error) {
-      updateMessage(sessionId, assistantMessage.id, () => ({
-        ...assistantMessage,
+      updateMessage(sessionId, assistantMessage.id, (message) => ({
+        ...message,
         content: getErrorMessage(error),
         loading: false,
         error: true,
       }));
     } finally {
+      delete streamTargetRef.current[sessionId];
       setLoadingSession((current) => (current === sessionId ? null : current));
     }
   };
@@ -285,7 +424,11 @@ function App() {
               {bootError ? <div className="boot-error">{bootError}</div> : null}
             </header>
 
-            <div className="message-area" ref={containRef}>
+            <div
+              className="message-area"
+              ref={containRef}
+              onScroll={handleMessageAreaScroll}
+            >
               {bubbleItems.length ? (
                 <Bubble.List
                   items={bubbleItems}
@@ -302,6 +445,11 @@ function App() {
                           typeof info.extraInfo?.reasoningContent === "string"
                             ? info.extraInfo.reasoningContent
                             : "";
+                        const toolCalls = Array.isArray(
+                          info.extraInfo?.toolCalls,
+                        )
+                          ? (info.extraInfo.toolCalls as ToolCallMessage[])
+                          : [];
 
                         return (
                           <div className="assistant-message">
@@ -309,6 +457,41 @@ function App() {
                               <Think title="思考" defaultExpanded={false}>
                                 <Streamdown>{reasoningContent}</Streamdown>
                               </Think>
+                            ) : null}
+                            {toolCalls.length ? (
+                              <div className="tool-call-list">
+                                {toolCalls.map((toolCall) => (
+                                  <details className="tool-call" key={toolCall.id}>
+                                    <summary>
+                                      <span className="tool-call-name">
+                                        {toolCall.name}
+                                      </span>
+                                      <span
+                                        className={
+                                          toolCall.success
+                                            ? "tool-call-status success"
+                                            : "tool-call-status error"
+                                        }
+                                      >
+                                        {toolCall.success ? "成功" : "失败"}
+                                      </span>
+                                      <span className="tool-call-summary">
+                                        {getToolSummary(toolCall.content)}
+                                      </span>
+                                    </summary>
+                                    <div className="tool-call-detail">
+                                      <div className="tool-call-section">
+                                        <div className="tool-call-label">参数</div>
+                                        <pre>{toolCall.arguments}</pre>
+                                      </div>
+                                      <div className="tool-call-section">
+                                        <div className="tool-call-label">结果</div>
+                                        <pre>{toolCall.content}</pre>
+                                      </div>
+                                    </div>
+                                  </details>
+                                ))}
+                              </div>
                             ) : null}
                             <Streamdown>{String(content)}</Streamdown>
                           </div>
