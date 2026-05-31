@@ -136,6 +136,93 @@ textarea {
   margin-bottom: 12px;
 }
 
+.tool-call-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.tool-call {
+  overflow: hidden;
+  border: 1px solid #dbe4f0;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.tool-call summary {
+  display: grid;
+  grid-template-columns: minmax(86px, max-content) max-content minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  cursor: pointer;
+  color: #334155;
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.tool-call-name {
+  min-width: 0;
+  overflow: hidden;
+  color: #0f172a;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-call-status {
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.tool-call-status.success {
+  color: #067647;
+  background: #dcfae6;
+}
+
+.tool-call-status.error {
+  color: #b42318;
+  background: #fee4e2;
+}
+
+.tool-call-summary {
+  min-width: 0;
+  overflow: hidden;
+  color: #64748b;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-call-detail {
+  display: grid;
+  gap: 8px;
+  padding: 0 10px 10px;
+}
+
+.tool-call-label {
+  margin-bottom: 4px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.tool-call pre {
+  max-height: 220px;
+  overflow: auto;
+  margin: 0;
+  padding: 8px;
+  border-radius: 6px;
+  background: #f8fafc;
+  color: #172033;
+  font-size: 12px;
+  line-height: 18px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .sender-wrap {
   padding: 16px 24px 24px;
   border-top: 1px solid #e2e8f0;
@@ -157,6 +244,14 @@ textarea {
 
   .message-area {
     padding: 16px;
+  }
+
+  .tool-call summary {
+    grid-template-columns: minmax(0, 1fr) max-content;
+  }
+
+  .tool-call-summary {
+    grid-column: 1 / -1;
   }
 
   .sender-wrap {

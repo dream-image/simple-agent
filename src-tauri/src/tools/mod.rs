@@ -1,6 +1,7 @@
 pub mod get_weather;
 pub mod edit_file;
 pub mod read_file;
+pub mod shell;
 
 use schemars::JsonSchema;
 use serde_json::{Value, json, to_value};
