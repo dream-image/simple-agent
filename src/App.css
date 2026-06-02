@@ -229,6 +229,47 @@ textarea {
   background: #ffffff;
 }
 
+.token-usage {
+  display: flex;
+  align-items: center;
+  width: fit-content;
+  margin-top: 10px;
+  color: #334155;
+}
+
+.token-ring {
+  width: 48px;
+  height: 48px;
+  flex: 0 0 48px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: conic-gradient(#1677ff var(--token-percent), #e2e8f0 0);
+  color: #0f172a;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.token-ring::before {
+  content: "";
+  width: 32px;
+  height: 32px;
+  grid-area: 1 / 1;
+  border-radius: 50%;
+  background: #ffffff;
+}
+
+.token-ring span {
+  z-index: 1;
+  grid-area: 1 / 1;
+}
+
+.token-popover {
+  color: #334155;
+  font-size: 12px;
+  line-height: 22px;
+}
+
 @media (max-width: 720px) {
   .app-shell {
     flex-direction: column;
@@ -257,4 +298,5 @@ textarea {
   .sender-wrap {
     padding: 12px 16px 16px;
   }
+
 }

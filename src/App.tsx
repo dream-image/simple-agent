@@ -1,7 +1,14 @@
-import {useEffect, useLayoutEffect, useMemo, useRef, useState} from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Button, ConfigProvider, Empty } from "antd";
+import { Button, ConfigProvider, Empty, Popover } from "antd";
 import type { MenuProps } from "antd";
 import { Bubble, Conversations, Sender, Think, XProvider } from "@ant-design/x";
 import type { BubbleItemType, ConversationItemType } from "@ant-design/x";
@@ -11,6 +18,12 @@ import "./App.css";
 type AgentReply = {
   content: string;
   reasoning_content?: string | null;
+  session_context?: SessionContext | null;
+};
+
+type SessionContext = {
+  token: number;
+  total_token: number;
 };
 
 type AgentStreamEvent = {
@@ -42,6 +55,7 @@ type ChatMessage = {
   reasoningContent?: string;
   toolCalls?: ToolCallMessage[];
   loading?: boolean;
+  streaming?: boolean;
   error?: boolean;
 };
 
@@ -49,6 +63,7 @@ type ChatSession = {
   key: string;
   label: string;
   messages: ChatMessage[];
+  sessionContext?: SessionContext | null;
 };
 
 const makeId = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -72,6 +87,14 @@ const getToolSummary = (content: string) => {
 
 const isScrollAtBottom = (element: HTMLDivElement) =>
   element.scrollHeight - element.scrollTop - element.clientHeight < 8;
+
+const getTokenPercent = (context?: SessionContext | null) => {
+  if (!context?.total_token) {
+    return 0;
+  }
+
+  return Math.min(100, Math.round((context.token / context.total_token) * 100));
+};
 
 function App() {
   const [firstSession] = useState(createSession);
@@ -110,6 +133,10 @@ function App() {
   }, [firstSession.key]);
 
   const activeSession = sessions.find((item) => item.key === activeKey);
+  const tokenPercent = getTokenPercent(activeSession?.sessionContext);
+  const tokenRingStyle = {
+    "--token-percent": `${tokenPercent}%`,
+  } as CSSProperties;
   useLayoutEffect(() => {
     shouldAutoScrollRef.current = true;
     containRef.current?.scrollTo(0, containRef.current.scrollHeight);
@@ -131,16 +158,19 @@ function App() {
           message.content || message.reasoningContent || message.toolCalls?.length,
         );
         const loading = Boolean(message.loading && !hasVisibleContent);
+        const streaming = Boolean(message.streaming);
 
         return {
           key: message.id,
           role: message.role,
           content: message.content,
+          streaming,
           loading,
           status: message.error ? "error" : loading ? "loading" : "success",
           extraInfo: {
             reasoningContent: message.reasoningContent,
             toolCalls: message.toolCalls,
+            streaming,
           },
         };
       }),
@@ -205,6 +235,7 @@ function App() {
             content: message.content + content,
             reasoningContent: `${message.reasoningContent ?? ""}${reasoningContent}`,
             loading: false,
+            streaming: true,
           }));
         } catch {
           return;
@@ -242,6 +273,7 @@ function App() {
               ...message,
               toolCalls,
               loading: false,
+              streaming: true,
             };
           });
         },
@@ -342,6 +374,7 @@ function App() {
       role: "assistant",
       content: "",
       loading: true,
+      streaming: true,
     };
 
     streamTargetRef.current[sessionId] = assistantMessage.id;
@@ -370,18 +403,30 @@ function App() {
         sessionId,
         question,
       });
+      const sessionContext = reply.session_context ?? null;
 
       updateMessage(sessionId, assistantMessage.id, (message) => ({
         ...message,
         content: reply.content || message.content,
         reasoningContent: reply.reasoning_content || message.reasoningContent,
         loading: false,
+        streaming: false,
       }));
+      if (sessionContext) {
+        setSessions((current) =>
+          current.map((session) =>
+            session.key === sessionId
+              ? { ...session, sessionContext }
+              : session,
+          ),
+        );
+      }
     } catch (error) {
       updateMessage(sessionId, assistantMessage.id, (message) => ({
         ...message,
         content: getErrorMessage(error),
         loading: false,
+        streaming: false,
         error: true,
       }));
     } finally {
@@ -450,12 +495,20 @@ function App() {
                         )
                           ? (info.extraInfo.toolCalls as ToolCallMessage[])
                           : [];
+                        const streaming = Boolean(info.extraInfo?.streaming);
+                        const markdownProps = {
+                          mode: "streaming" as const,
+                          parseIncompleteMarkdown: true,
+                          isAnimating: streaming,
+                        };
 
                         return (
                           <div className="assistant-message">
                             {reasoningContent ? (
                               <Think title="思考" defaultExpanded={false}>
-                                <Streamdown>{reasoningContent}</Streamdown>
+                                <Streamdown {...markdownProps}>
+                                  {reasoningContent}
+                                </Streamdown>
                               </Think>
                             ) : null}
                             {toolCalls.length ? (
@@ -493,7 +546,9 @@ function App() {
                                 ))}
                               </div>
                             ) : null}
-                            <Streamdown>{String(content)}</Streamdown>
+                            <Streamdown {...markdownProps}>
+                              {String(content)}
+                            </Streamdown>
                           </div>
                         );
                       },
@@ -515,6 +570,37 @@ function App() {
                 onChange={setInput}
                 onSubmit={handleSubmit}
               />
+              {activeSession?.sessionContext ? (
+                <Popover
+                  content={
+                    <div className="token-popover">
+                      <div>
+                        已用：{activeSession.sessionContext.token.toLocaleString()}
+                      </div>
+                      <div>
+                        总量：
+                        {activeSession.sessionContext.total_token.toLocaleString()}
+                      </div>
+                      <div>
+                        剩余：
+                        {Math.max(
+                          0,
+                          activeSession.sessionContext.total_token -
+                            activeSession.sessionContext.token,
+                        ).toLocaleString()}
+                      </div>
+                    </div>
+                  }
+                  placement="topLeft"
+                  trigger="hover"
+                >
+                  <div className="token-usage">
+                    <div className="token-ring" style={tokenRingStyle}>
+                      <span>{tokenPercent}%</span>
+                    </div>
+                  </div>
+                </Popover>
+              ) : null}
             </div>
           </section>
         </main>

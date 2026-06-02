@@ -1,6 +1,9 @@
 pub mod context;
 pub mod tools;
-use crate::context::session_context::SESSION_CONTEXT;
+mod prompt;
+mod path;
+
+use crate::context::session_context::{SessionContext, SESSION_CONTEXT_MAP};
 use crate::tools::edit_file::EditFile;
 use crate::tools::edit_file::ToolInput as EditFileInput;
 use crate::tools::get_weather::ToolInput as GetWeatherInput;
@@ -15,19 +18,21 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, to_value};
 use std::collections::HashMap;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, MutexGuard};
 use tools::get_weather::GetWeather;
 use tauri::{AppHandle, Emitter};
 use tokio_stream::StreamExt;
 use eventsource_stream::Eventsource;
+use crate::prompt::get_system_prompt;
+
 #[derive(Default,serde::Serialize, Clone,Debug,Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum Role {
     #[default]
     User,
-    // System,
+    System,
     Assistant,
     Tool,
 }
@@ -194,6 +199,8 @@ struct AgentToolCallEvent {
     success: bool,
 }
 
+
+
 #[derive(serde::Serialize, Clone, Debug,Deserialize,Default)]
 struct InputMessage {
     role: Role,
@@ -205,9 +212,37 @@ struct InputMessage {
     tool_calls: Option<Vec<ToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_context: Option<SessionContext>,
 }
 
-async fn agent_call(history: &[InputMessage]) -> anyhow::Result<AiResponse> {
+#[derive(serde::Serialize, Clone, Debug,Deserialize,Default)]
+struct ChatMessage{
+    role: Role,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<ToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<String>,
+}
+
+impl From<&InputMessage> for ChatMessage{
+    fn from(value: &InputMessage) -> Self {
+       Self{
+           role:value.role.clone(),
+           content: value.content.clone(),
+           reasoning_content: value.reasoning_content.clone(),
+           tool_calls: value.tool_calls.clone(),
+           tool_call_id: value.tool_call_id.clone(),
+       }
+    }
+}
+
+
+async fn agent_call(history: &[ChatMessage]) -> anyhow::Result<AiResponse> {
     let body_json = json!({
          "model": "deepseek-v4-pro",
          "messages": history,
@@ -247,9 +282,10 @@ async fn agent_call(history: &[InputMessage]) -> anyhow::Result<AiResponse> {
     Ok(res)
 }
 async fn agent_call_stream(app:&AppHandle,session_id: &str,history: &[InputMessage]) -> anyhow::Result<AiResponse> {
+    let chat_message:Vec<ChatMessage> = history.iter().map(ChatMessage::from).collect();
     let body_json = json!({
          "model": "deepseek-v4-pro",
-         "messages": history,
+         "messages": chat_message,
          "tools":to_value(
             vec![
                 GetWeather::definition(),
@@ -284,6 +320,7 @@ async fn agent_call_stream(app:&AppHandle,session_id: &str,history: &[InputMessa
         reasoning_content: None,
         tool_calls: None,
         tool_call_id: None,
+        session_context: None,
     };
     let mut finish_reason = "stop".to_string();
     while let Some(event) = events.next().await {
@@ -302,6 +339,7 @@ async fn agent_call_stream(app:&AppHandle,session_id: &str,history: &[InputMessa
         ai_response.object=value.object;
         if let Some(usage)=value.usage {
             ai_response.usage=usage;
+
         }
 
         let Some(choice) = value.choices.first() else {
@@ -387,6 +425,7 @@ async fn agent_init() -> Result<(), String> {
     tools_map.insert(String::from("edit_file"), ToolsEnum::EditFile(EditFile {}));
     tools_map.insert(String::from("read_file"), ToolsEnum::ReadFile(ReadFile {}));
     tools_map.insert(String::from("shell"), ToolsEnum::Shell(Shell {}));
+
     Ok(())
 }
 
@@ -395,7 +434,15 @@ async fn create_session(session_id: &str) -> Result<(), String> {
     let mut history_map = HISTORY_MAP.lock().await;
     history_map
         .entry(session_id.to_string())
-        .or_insert_with(Vec::new);
+        .or_insert_with(|| vec![InputMessage{
+            role: Role::System,
+            content: Some(get_system_prompt()),
+            reasoning_content: None,
+            tool_calls: None,
+            tool_call_id: None,
+            session_context: None,
+        }]);
+
     Ok(())
 }
 
@@ -419,12 +466,16 @@ async fn call(app:AppHandle,session_id: &str, question: &str) -> Result<InputMes
             reasoning_content: None,
             tool_calls: None,
             tool_call_id: None,
+            session_context:None
         });
         history.clone()
     };
+    let mut session_context_map = SESSION_CONTEXT_MAP.lock().await;
+    let  session_context=session_context_map.entry(session_id.to_string()).or_insert(Arc::new(Mutex::new(SessionContext::new(0,100_0000)))).clone();
+    let mut session_context = session_context.lock().await;
 
-    let tool_result_push =
-        |history: &mut Vec<InputMessage>, res: anyhow::Result<String>, tool: &ToolCall| {
+    let  tool_result_push =
+        async |session_context:&mut MutexGuard<SessionContext>,history: &mut Vec<InputMessage>, res: anyhow::Result<String>, tool: &ToolCall| {
             let (content, success) = match res {
                 Ok(value) => (value, true),
                 Err(err) => (err.to_string(), false),
@@ -435,6 +486,7 @@ async fn call(app:AppHandle,session_id: &str, question: &str) -> Result<InputMes
                 reasoning_content: None,
                 tool_calls: None,
                 tool_call_id: Some(tool.id.clone()),
+                session_context:Some(session_context.clone()),
             };
             history.push(message.clone());
             let _ = app.emit("agent_tool_call",AgentToolCallEvent{
@@ -446,15 +498,15 @@ async fn call(app:AppHandle,session_id: &str, question: &str) -> Result<InputMes
                 success,
             });
         };
+
     loop {
         let res = agent_call_stream(&app,session_id,&history).await.map_err(|err| err.to_string())?;
         {
-            let mut session_context = SESSION_CONTEXT.lock().await;
             session_context.add_token(res.usage.total_tokens);
             println!(
                 "token:{}/{}",
                 session_context.token,
-                session_context.totalToken.to_formatted_string(&Locale::en)
+                session_context.total_token.to_formatted_string(&Locale::en)
             );
         }
         let first_content_message = &res
@@ -469,6 +521,7 @@ async fn call(app:AppHandle,session_id: &str, question: &str) -> Result<InputMes
                 reasoning_content: first_content_message.reasoning_content.clone(),
                 tool_calls: Some(tool_calls.clone()),
                 tool_call_id: None,
+                session_context:Some(session_context.clone()),
             });
             let tools_map = TOOLS_MAP.lock().await;
             for tool in tool_calls {
@@ -479,34 +532,34 @@ async fn call(app:AppHandle,session_id: &str, question: &str) -> Result<InputMes
                             serde_json::from_str::<GetWeatherInput>(&tool.function.arguments)
                                 .map(|input| get_weather.execute(input))
                                 .map_err(|err| anyhow!(err));
-                        tool_result_push(&mut history, result, tool);
+                        tool_result_push(&mut session_context,&mut history, result, tool).await;
                     }
                     ("edit_file", Some(ToolsEnum::EditFile(edit_file))) => {
                         let result =
                             serde_json::from_str::<EditFileInput>(&tool.function.arguments)
                                 .map_err(|err| anyhow!(err))
                                 .and_then(|input| edit_file.execute(input));
-                        tool_result_push(&mut history, result, tool);
+                        tool_result_push(&mut session_context,&mut history, result, tool).await;
                     }
                     ("read_file", Some(ToolsEnum::ReadFile(read_file))) => {
                         let result =
                             serde_json::from_str::<ReadFileInput>(&tool.function.arguments)
                                 .map_err(|err| anyhow!(err))
                                 .and_then(|input| read_file.execute(input));
-                        tool_result_push(&mut history, result, tool);
+                        tool_result_push(&mut session_context,&mut history, result, tool).await;
                     }
                     ("shell", Some(ToolsEnum::Shell(shell))) => {
                         let result = serde_json::from_str::<ShellInput>(&tool.function.arguments)
                             .map_err(|err| anyhow!(err))
                             .and_then(|input| shell.execute(input));
-                        tool_result_push(&mut history, result, tool);
+                        tool_result_push(&mut session_context,&mut history, result, tool).await;
                     }
                     _ => {
-                        tool_result_push(
+                        tool_result_push(&mut session_context,
                             &mut history,
                             anyhow::Ok(format!("该{}工具未实现", &tool.function.name)),
                             tool,
-                        );
+                        ).await;
                         println!("工具：{}，还没有实现", tool.function.name);
                     }
                 }
@@ -522,6 +575,7 @@ async fn call(app:AppHandle,session_id: &str, question: &str) -> Result<InputMes
                 reasoning_content: first_content_message.reasoning_content.clone(),
                 tool_calls: None,
                 tool_call_id: None,
+                session_context:Some(session_context.clone()),
             };
             history.push(message.clone());
             let mut history_map = HISTORY_MAP.lock().await;

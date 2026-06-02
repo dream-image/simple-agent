@@ -4,13 +4,15 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::fs::File;
 use std::io::{Error, Read, Write};
+use std::path::PathBuf;
+use crate::path::getCurrentWorkPath;
 
 pub struct EditFile {}
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema)]
 #[schemars(title = "")]
 pub struct ToolInput {
-    #[schemars(description = "文件的绝对路径，如果无法得出绝对路径地址，那就询问用户")]
+    #[schemars(description = "文件的路径,支持相对路径和绝对路径")]
     file_path: String,
     #[schemars(description = "被替换的字符串")]
     old_string: String,
@@ -28,14 +30,18 @@ impl Tool for EditFile {
     type Output = anyhow::Result<String>;
 
     fn execute(&self, input: Self::Input) -> Self::Output {
-        let mut content = fs::read_to_string(&input.file_path)?;
+        let mut path = PathBuf::from(input.file_path);
+        if path.is_relative() {
+            path = getCurrentWorkPath().join(path);
+        }
+        let mut content = fs::read_to_string(&path)?;
 
         if input.replace_all.unwrap_or(false) {
             content = content.replace(input.old_string.as_str(), &input.new_string);
         } else {
             content = content.replacen(input.old_string.as_str(), &input.new_string, 1);
         }
-        fs::write(&input.file_path, content.as_bytes())?;
+        fs::write(&path, content.as_bytes())?;
         Ok("修改成功".to_string())
     }
 }
