@@ -12,7 +12,8 @@ import { Button, ConfigProvider, Empty, Popover } from "antd";
 import type { MenuProps } from "antd";
 import { Bubble, Conversations, Sender, Think, XProvider } from "@ant-design/x";
 import type { BubbleItemType, ConversationItemType } from "@ant-design/x";
-import { Streamdown } from "streamdown";
+import { XMarkdown } from "@ant-design/x-markdown";
+// import { Streamdown } from "streamdown";
 import "./App.css";
 
 type AgentReply = {
@@ -497,18 +498,21 @@ function App() {
                           : [];
                         const streaming = Boolean(info.extraInfo?.streaming);
                         const markdownProps = {
-                          mode: "streaming" as const,
-                          parseIncompleteMarkdown: true,
-                          isAnimating: streaming,
+                          streaming: {
+                            hasNextChunk: streaming,
+                            enableAnimation: true,
+                            tail: streaming,
+                          },
                         };
 
                         return (
                           <div className="assistant-message">
                             {reasoningContent ? (
                               <Think title="思考" defaultExpanded={false}>
-                                <Streamdown {...markdownProps}>
+                                {/*<Streamdown mode="streaming" parseIncompleteMarkdown isAnimating={streaming}>
                                   {reasoningContent}
-                                </Streamdown>
+                                </Streamdown>*/}
+                                <XMarkdown content={reasoningContent} {...markdownProps} />
                               </Think>
                             ) : null}
                             {toolCalls.length ? (
@@ -532,6 +536,7 @@ function App() {
                                         {getToolSummary(toolCall.content)}
                                       </span>
                                     </summary>
+
                                     <div className="tool-call-detail">
                                       <div className="tool-call-section">
                                         <div className="tool-call-label">参数</div>
@@ -546,9 +551,10 @@ function App() {
                                 ))}
                               </div>
                             ) : null}
-                            <Streamdown {...markdownProps}>
+                            {/*<Streamdown mode="streaming" parseIncompleteMarkdown isAnimating={streaming}>
                               {String(content)}
-                            </Streamdown>
+                            </Streamdown>*/}
+                            <XMarkdown content={String(content)} {...markdownProps} />
                           </div>
                         );
                       },
@@ -594,9 +600,9 @@ function App() {
                   placement="topLeft"
                   trigger="hover"
                 >
-                  <div className="token-usage">
+                  <div className="bottom-bar">
                     <div className="token-ring" style={tokenRingStyle}>
-                      <span>{tokenPercent}%</span>
+                      <span>{tokenPercent}</span>
                     </div>
                   </div>
                 </Popover>

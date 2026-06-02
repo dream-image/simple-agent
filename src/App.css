@@ -1,5 +1,5 @@
 @import "tailwindcss";
-@source "../node_modules/streamdown/dist/*.js";
+/* @source "../node_modules/streamdown/dist/*.js"; */
 
 :root {
   --background: oklch(1 0 0);
@@ -128,9 +128,15 @@ textarea {
   max-width: 760px;
 }
 
+.assistant-message .x-markdown {
+  color: #172033;
+}
+
+/*
 .assistant-message .streamdown {
   color: #172033;
 }
+*/
 
 .assistant-message .ant-x-think {
   margin-bottom: 12px;
@@ -224,36 +230,37 @@ textarea {
 }
 
 .sender-wrap {
-  padding: 16px 24px 24px;
+  padding: 12px 16px 4px;
   border-top: 1px solid #e2e8f0;
   background: #ffffff;
 }
 
-.token-usage {
+.bottom-bar {
   display: flex;
   align-items: center;
   width: fit-content;
-  margin-top: 10px;
+  margin-top: 4px;
+  margin-left: auto;
   color: #334155;
 }
 
 .token-ring {
-  width: 48px;
-  height: 48px;
-  flex: 0 0 48px;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
   display: grid;
   place-items: center;
   border-radius: 50%;
   background: conic-gradient(#1677ff var(--token-percent), #e2e8f0 0);
   color: #0f172a;
-  font-size: 12px;
+  font-size: 10px;
   font-weight: 700;
 }
 
 .token-ring::before {
   content: "";
-  width: 32px;
-  height: 32px;
+  width: 16px;
+  height: 16px;
   grid-area: 1 / 1;
   border-radius: 50%;
   background: #ffffff;
@@ -296,7 +303,7 @@ textarea {
   }
 
   .sender-wrap {
-    padding: 12px 16px 16px;
+     padding: 12px 16px 4px;
   }
 
 }
