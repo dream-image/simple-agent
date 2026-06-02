@@ -3,8 +3,6 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::process::Command;
 use anyhow::anyhow;
-use num_format::{Locale, ToFormattedString};
-use tauri::Error::Anyhow;
 
 pub struct Shell {}
 

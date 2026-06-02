@@ -2,10 +2,9 @@ use crate::tools::Tool;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::fs::File;
-use std::io::{Error, Read, Write};
+use std::io::{ Write};
 use std::path::PathBuf;
-use crate::path::getCurrentWorkPath;
+use crate::path::get_current_work_path;
 
 pub struct EditFile {}
 
@@ -32,7 +31,7 @@ impl Tool for EditFile {
     fn execute(&self, input: Self::Input) -> Self::Output {
         let mut path = PathBuf::from(input.file_path);
         if path.is_relative() {
-            path = getCurrentWorkPath().join(path);
+            path = get_current_work_path().join(path);
         }
         let mut content = fs::read_to_string(&path)?;
 
