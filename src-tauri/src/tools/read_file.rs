@@ -1,9 +1,11 @@
-use crate::tools::Tool;
+use crate::tools::{Tool, ToolEffect};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{ PathBuf};
+use crate::context::session_context::SessionContext;
 use crate::path::get_current_work_path;
+use crate::permission::{Permission, PermissionLevel};
 
 pub struct ReadFile {}
 
@@ -37,5 +39,14 @@ impl Tool for ReadFile {
             .take(end_line.saturating_sub(start_line))
             .collect();
         Ok(content)
+    }
+    fn effect_type(&self,_:Option<&Self::Input>) -> ToolEffect {
+        ToolEffect::ReadOnly
+    }
+}
+
+impl Permission for ReadFile {
+    fn check_permission(&self,input:&Self::Input,session_context: &SessionContext) -> PermissionLevel {
+        PermissionLevel::Allow
     }
 }

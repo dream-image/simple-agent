@@ -1,9 +1,14 @@
 pub mod context;
-pub mod tools;
-mod prompt;
+mod event;
 mod path;
+mod permission;
+mod prompt;
+pub mod tools;
 
 use crate::context::session_context::{SessionContext, SESSION_CONTEXT_MAP};
+use crate::event::{wait_permission_apply, PermissionResult};
+use crate::permission::{check_final_permission, Permission, PermissionLevel};
+use crate::prompt::get_system_prompt;
 use crate::tools::edit_file::EditFile;
 use crate::tools::edit_file::ToolInput as EditFileInput;
 use crate::tools::get_weather::ToolInput as GetWeatherInput;
@@ -13,6 +18,7 @@ use crate::tools::shell::Shell;
 use crate::tools::shell::ToolInput as ShellInput;
 use crate::tools::Tool;
 use anyhow::{anyhow, Context};
+use eventsource_stream::Eventsource;
 use num_format::{Locale, ToFormattedString};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -20,14 +26,12 @@ use serde_json::{json, to_value};
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
-use tokio::sync::{Mutex, MutexGuard};
-use tools::get_weather::GetWeather;
 use tauri::{AppHandle, Emitter};
+use tokio::sync::{Mutex, MutexGuard};
 use tokio_stream::StreamExt;
-use eventsource_stream::Eventsource;
-use crate::prompt::get_system_prompt;
+use tools::get_weather::GetWeather;
 
-#[derive(Default,serde::Serialize, Clone,Debug,Deserialize)]
+#[derive(Default, serde::Serialize, Clone, Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum Role {
     #[default]
@@ -42,12 +46,12 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
-#[derive(Default,Clone, Deserialize, Debug, Serialize)]
+#[derive(Default, Clone, Deserialize, Debug, Serialize)]
 struct Function {
     name: String,
     arguments: String,
 }
-#[derive(Default,Clone, Deserialize, Debug, Serialize)]
+#[derive(Default, Clone, Deserialize, Debug, Serialize)]
 struct ToolCall {
     index: u32,
     id: String,
@@ -55,41 +59,39 @@ struct ToolCall {
     function: Function,
 }
 
-
-#[derive(Default,Deserialize, Debug, Serialize,Clone)]
+#[derive(Default, Deserialize, Debug, Serialize, Clone)]
 struct Choice {
     finish_reason: String,
     index: u32,
     message: InputMessage,
 }
 
-#[derive(Default,Deserialize, Debug, Serialize,Clone)]
+#[derive(Default, Deserialize, Debug, Serialize, Clone)]
 struct ThinkingDelta {
     reasoning_content: String,
 }
-#[derive(Default,Deserialize, Debug, Serialize,Clone)]
+#[derive(Default, Deserialize, Debug, Serialize, Clone)]
 struct ContentDelta {
     content: String,
 }
-#[derive(Default,Deserialize, Debug, Serialize,Clone)]
+#[derive(Default, Deserialize, Debug, Serialize, Clone)]
 struct StreamFunction {
     name: Option<String>,
     arguments: Option<String>,
 }
-#[derive(Default,Deserialize, Debug, Serialize,Clone)]
+#[derive(Default, Deserialize, Debug, Serialize, Clone)]
 struct ToolDefine {
     index: u32,
     id: Option<String>,
     r#type: Option<String>,
     function: StreamFunction,
 }
-#[derive(Default,Deserialize, Debug, Serialize,Clone)]
+#[derive(Default, Deserialize, Debug, Serialize, Clone)]
 struct SessionStart {
-    role:Role,
-
+    role: Role,
 }
 
-#[derive(Default,Deserialize, Debug, Serialize,Clone)]
+#[derive(Default, Deserialize, Debug, Serialize, Clone)]
 struct DeltaRaw {
     role: Option<Role>,
     content: Option<String>,
@@ -97,7 +99,7 @@ struct DeltaRaw {
     tool_calls: Option<Vec<ToolDefine>>,
 }
 
-#[derive(Default,Debug, Serialize,Clone)]
+#[derive(Default, Debug, Serialize, Clone)]
 enum Delta {
     #[default]
     Empty,
@@ -138,22 +140,22 @@ impl From<DeltaRaw> for Delta {
         Delta::Empty
     }
 }
-#[derive(Default,Deserialize, Debug, Serialize,Clone)]
+#[derive(Default, Deserialize, Debug, Serialize, Clone)]
 struct StreamChoice {
     index: u32,
     delta: Delta,
     finish_reason: Option<String>,
 }
 
-#[derive(Default,Deserialize, Debug, Serialize,Clone)]
+#[derive(Default, Deserialize, Debug, Serialize, Clone)]
 struct CompletionTokensDetails {
     reasoning_tokens: u32,
 }
-#[derive(Default,Deserialize, Debug, Serialize,Clone)]
+#[derive(Default, Deserialize, Debug, Serialize, Clone)]
 struct PromptTokensDetails {
     cached_tokens: u32,
 }
-#[derive(Default,Deserialize, Debug, Serialize,Clone)]
+#[derive(Default, Deserialize, Debug, Serialize, Clone)]
 struct Usage {
     completion_tokens: u32,
     completion_tokens_details: CompletionTokensDetails,
@@ -164,7 +166,7 @@ struct Usage {
     total_tokens: u32,
 }
 
-#[derive(Default,Deserialize, Debug, Serialize)]
+#[derive(Default, Deserialize, Debug, Serialize)]
 struct AiResponse {
     choices: Vec<Choice>,
     id: String,
@@ -172,7 +174,7 @@ struct AiResponse {
     object: String,
     usage: Usage,
 }
-#[derive(Default,Deserialize, Debug, Serialize,Clone)]
+#[derive(Default, Deserialize, Debug, Serialize, Clone)]
 struct AiStreamResponse {
     choices: Vec<StreamChoice>,
     id: String,
@@ -199,9 +201,7 @@ struct AgentToolCallEvent {
     success: bool,
 }
 
-
-
-#[derive(serde::Serialize, Clone, Debug,Deserialize,Default)]
+#[derive(serde::Serialize, Clone, Debug, Deserialize, Default)]
 struct InputMessage {
     role: Role,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -216,8 +216,8 @@ struct InputMessage {
     session_context: Option<SessionContext>,
 }
 
-#[derive(serde::Serialize, Clone, Debug,Deserialize,Default)]
-struct ChatMessage{
+#[derive(serde::Serialize, Clone, Debug, Deserialize, Default)]
+struct ChatMessage {
     role: Role,
     #[serde(skip_serializing_if = "Option::is_none")]
     content: Option<String>,
@@ -229,18 +229,17 @@ struct ChatMessage{
     tool_call_id: Option<String>,
 }
 
-impl From<&InputMessage> for ChatMessage{
+impl From<&InputMessage> for ChatMessage {
     fn from(value: &InputMessage) -> Self {
-       Self{
-           role:value.role.clone(),
-           content: value.content.clone(),
-           reasoning_content: value.reasoning_content.clone(),
-           tool_calls: value.tool_calls.clone(),
-           tool_call_id: value.tool_call_id.clone(),
-       }
+        Self {
+            role: value.role.clone(),
+            content: value.content.clone(),
+            reasoning_content: value.reasoning_content.clone(),
+            tool_calls: value.tool_calls.clone(),
+            tool_call_id: value.tool_call_id.clone(),
+        }
     }
 }
-
 
 async fn agent_call(history: &[ChatMessage]) -> anyhow::Result<AiResponse> {
     let body_json = json!({
@@ -281,8 +280,12 @@ async fn agent_call(history: &[ChatMessage]) -> anyhow::Result<AiResponse> {
         .with_context(|| format!("响应解析失败，响应体：{}", text))?;
     Ok(res)
 }
-async fn agent_call_stream(app:&AppHandle,session_id: &str,history: &[InputMessage]) -> anyhow::Result<AiResponse> {
-    let chat_message:Vec<ChatMessage> = history.iter().map(ChatMessage::from).collect();
+async fn agent_call_stream(
+    app: &AppHandle,
+    session_id: &str,
+    history: &[InputMessage],
+) -> anyhow::Result<AiResponse> {
+    let chat_message: Vec<ChatMessage> = history.iter().map(ChatMessage::from).collect();
     let body_json = json!({
          "model": "deepseek-v4-pro",
          "messages": chat_message,
@@ -312,9 +315,9 @@ async fn agent_call_stream(app:&AppHandle,session_id: &str,history: &[InputMessa
         .await?
         .error_for_status()?;
 
-    let mut events=  response.bytes_stream().eventsource();
+    let mut events = response.bytes_stream().eventsource();
     let mut ai_response = AiResponse::default();
-    let mut input_message = InputMessage{
+    let mut input_message = InputMessage {
         role: Role::Assistant,
         content: None,
         reasoning_content: None,
@@ -325,51 +328,64 @@ async fn agent_call_stream(app:&AppHandle,session_id: &str,history: &[InputMessa
     let mut finish_reason = "stop".to_string();
     while let Some(event) = events.next().await {
         let event = event?;
-        let _ = app.emit("agent_stream",AgentStreamEvent{
-            session_id: session_id.to_string(),
-            data: event.data.clone(),
-        });
-        if event.data =="[DONE]"{
+        let _ = app.emit(
+            "agent_stream",
+            AgentStreamEvent {
+                session_id: session_id.to_string(),
+                data: event.data.clone(),
+            },
+        );
+        if event.data == "[DONE]" {
             break;
         }
         println!("{:?}", event.data);
         let value = serde_json::from_str::<AiStreamResponse>(&event.data)?;
-        ai_response.id=value.id;
-        ai_response.model=value.model;
-        ai_response.object=value.object;
-        if let Some(usage)=value.usage {
-            ai_response.usage=usage;
-
+        ai_response.id = value.id;
+        ai_response.model = value.model;
+        ai_response.object = value.object;
+        if let Some(usage) = value.usage {
+            ai_response.usage = usage;
         }
 
         let Some(choice) = value.choices.first() else {
             continue;
         };
-        if let  Some(reason)=choice.finish_reason.clone(){
-            finish_reason=reason;
+        if let Some(reason) = choice.finish_reason.clone() {
+            finish_reason = reason;
             continue;
         }
         let delta = &choice.delta;
         match delta {
-            Delta::SessionStart(data)=>{
+            Delta::SessionStart(data) => {
                 input_message.role = data.role.clone();
-            },
-            Delta::Thinking(data)=>{
-                input_message.reasoning_content.get_or_insert_default().push_str(data.reasoning_content.as_str());
-            },
-            Delta::Content(data)=>{
-                input_message.content.get_or_insert_default().push_str(data.content.as_str());
-            },
-            Delta::ToolCalls(data)=>{
+            }
+            Delta::Thinking(data) => {
+                input_message
+                    .reasoning_content
+                    .get_or_insert_default()
+                    .push_str(data.reasoning_content.as_str());
+            }
+            Delta::Content(data) => {
+                input_message
+                    .content
+                    .get_or_insert_default()
+                    .push_str(data.content.as_str());
+            }
+            Delta::ToolCalls(data) => {
                 let list = input_message.tool_calls.get_or_insert_default();
                 for item in data {
-                    let tool = if let Some(index) = list.iter().position(|tool| tool.index == item.index) {
+                    let tool = if let Some(index) =
+                        list.iter().position(|tool| tool.index == item.index)
+                    {
                         &mut list[index]
                     } else {
                         list.push(ToolCall {
                             index: item.index,
                             id: item.id.clone().unwrap_or_default(),
-                            r#type: item.r#type.clone().unwrap_or_else(|| "function".to_string()),
+                            r#type: item
+                                .r#type
+                                .clone()
+                                .unwrap_or_else(|| "function".to_string()),
                             function: Default::default(),
                         });
                         list.last_mut().unwrap()
@@ -387,22 +403,18 @@ async fn agent_call_stream(app:&AppHandle,session_id: &str,history: &[InputMessa
                         tool.function.arguments.push_str(arguments);
                     }
                 }
-            },
-            _ =>{
-
             }
+            _ => {}
         }
+    }
 
-    };
-
-    ai_response.choices= vec![Choice{
+    ai_response.choices = vec![Choice {
         finish_reason,
         index: 0,
         message: input_message,
     }];
     Ok(ai_response)
 }
-
 
 enum ToolsEnum {
     GetWeather(GetWeather),
@@ -434,14 +446,16 @@ async fn create_session(session_id: &str) -> Result<(), String> {
     let mut history_map = HISTORY_MAP.lock().await;
     history_map
         .entry(session_id.to_string())
-        .or_insert_with(|| vec![InputMessage{
-            role: Role::System,
-            content: Some(get_system_prompt()),
-            reasoning_content: None,
-            tool_calls: None,
-            tool_call_id: None,
-            session_context: None,
-        }]);
+        .or_insert_with(|| {
+            vec![InputMessage {
+                role: Role::System,
+                content: Some(get_system_prompt()),
+                reasoning_content: None,
+                tool_calls: None,
+                tool_call_id: None,
+                session_context: None,
+            }]
+        });
 
     Ok(())
 }
@@ -454,7 +468,7 @@ async fn delete_session(session_id: &str) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn call(app:AppHandle,session_id: &str, question: &str) -> Result<InputMessage, String> {
+async fn call(app: AppHandle, session_id: &str, question: &str) -> Result<InputMessage, String> {
     let mut history = {
         let mut history_map = HISTORY_MAP.lock().await;
         let history = history_map
@@ -466,41 +480,51 @@ async fn call(app:AppHandle,session_id: &str, question: &str) -> Result<InputMes
             reasoning_content: None,
             tool_calls: None,
             tool_call_id: None,
-            session_context:None
+            session_context: None,
         });
         history.clone()
     };
     let mut session_context_map = SESSION_CONTEXT_MAP.lock().await;
-    let  session_context=session_context_map.entry(session_id.to_string()).or_insert(Arc::new(Mutex::new(SessionContext::new(0,100_0000)))).clone();
+    let session_context = session_context_map
+        .entry(session_id.to_string())
+        .or_insert(Arc::new(Mutex::new(SessionContext::new(0, 100_0000))))
+        .clone();
     let mut session_context = session_context.lock().await;
 
-    let  tool_result_push =
-        async |session_context:&mut MutexGuard<SessionContext>,history: &mut Vec<InputMessage>, res: anyhow::Result<String>, tool: &ToolCall| {
-            let (content, success) = match res {
-                Ok(value) => (value, true),
-                Err(err) => (err.to_string(), false),
-            };
-            let message = InputMessage {
-                role: Role::Tool,
-                content: Some(content.clone()),
-                reasoning_content: None,
-                tool_calls: None,
-                tool_call_id: Some(tool.id.clone()),
-                session_context:Some(session_context.clone()),
-            };
-            history.push(message.clone());
-            let _ = app.emit("agent_tool_call",AgentToolCallEvent{
+    let tool_result_push = async |session_context: &mut MutexGuard<SessionContext>,
+                                  history: &mut Vec<InputMessage>,
+                                  res: anyhow::Result<String>,
+                                  tool: &ToolCall| {
+        let (content, success) = match res {
+            Ok(value) => (value, true),
+            Err(err) => (err.to_string(), false),
+        };
+        let message = InputMessage {
+            role: Role::Tool,
+            content: Some(content.clone()),
+            reasoning_content: None,
+            tool_calls: None,
+            tool_call_id: Some(tool.id.clone()),
+            session_context: Some(session_context.clone()),
+        };
+        history.push(message.clone());
+        let _ = app.emit(
+            "agent_tool_call",
+            AgentToolCallEvent {
                 session_id: session_id.to_string(),
                 id: tool.id.clone(),
                 name: tool.function.name.clone(),
                 arguments: tool.function.arguments.clone(),
                 content,
                 success,
-            });
-        };
+            },
+        );
+    };
 
     loop {
-        let res = agent_call_stream(&app,session_id,&history).await.map_err(|err| err.to_string())?;
+        let res = agent_call_stream(&app, session_id, &history)
+            .await
+            .map_err(|err| err.to_string())?;
         {
             session_context.add_token(res.usage.total_tokens);
             println!(
@@ -521,45 +545,290 @@ async fn call(app:AppHandle,session_id: &str, question: &str) -> Result<InputMes
                 reasoning_content: first_content_message.reasoning_content.clone(),
                 tool_calls: Some(tool_calls.clone()),
                 tool_call_id: None,
-                session_context:Some(session_context.clone()),
+                session_context: Some(session_context.clone()),
             });
             let tools_map = TOOLS_MAP.lock().await;
             for tool in tool_calls {
                 let name = tool.function.name.as_str();
+
+                let tool_pre_permission = session_context.permission.check_permissions(name);
                 match (name, tools_map.get(name)) {
                     ("get_weather", Some(ToolsEnum::GetWeather(get_weather))) => {
-                        let result =
+                        let input =
                             serde_json::from_str::<GetWeatherInput>(&tool.function.arguments)
-                                .map(|input| get_weather.execute(input))
                                 .map_err(|err| anyhow!(err));
-                        tool_result_push(&mut session_context,&mut history, result, tool).await;
+                        if let Ok(input) = input {
+                            let tool_permission =
+                                get_weather.check_permission(&input, &session_context);
+                            let final_permission = check_final_permission(
+                                &tool_pre_permission,
+                                &tool_permission,
+                                &session_context.mode,
+                                get_weather,
+                            );
+                            match final_permission.0 {
+                                PermissionLevel::Deny => {
+                                    tool_result_push(
+                                        &mut session_context,
+                                        &mut history,
+                                        Err(anyhow!(final_permission.1)),
+                                        tool,
+                                    )
+                                    .await;
+                                    continue;
+                                }
+                                PermissionLevel::Ask => {
+                                    let result = wait_permission_apply(&app,session_id, get_weather).await;
+                                    match result {
+                                        Ok(value) => {
+                                            match value.result {
+                                                PermissionResult::AlwaysAllow
+                                                | PermissionResult::Allow => {
+                                                    //这里放行，暂不需要逻辑处理
+                                                }
+                                                PermissionResult::Deny => {
+                                                    tool_result_push(
+                                                        &mut session_context,
+                                                        &mut history,
+                                                        Err(anyhow!(value.reason)),
+                                                        tool,
+                                                    )
+                                                    .await;
+                                                    continue;
+                                                }
+                                            }
+                                        }
+                                        Err(err) => {
+                                            tool_result_push(
+                                                &mut session_context,
+                                                &mut history,
+                                                Err(anyhow!(err)),
+                                                tool,
+                                            )
+                                            .await;
+                                            continue;
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                            let result = get_weather.execute(input);
+
+                            tool_result_push(&mut session_context, &mut history, Ok(result), tool)
+                                .await;
+                        } else if let Err(err) = input {
+                            tool_result_push(&mut session_context, &mut history, Err(err), tool)
+                                .await;
+                        }
                     }
                     ("edit_file", Some(ToolsEnum::EditFile(edit_file))) => {
-                        let result =
-                            serde_json::from_str::<EditFileInput>(&tool.function.arguments)
-                                .map_err(|err| anyhow!(err))
-                                .and_then(|input| edit_file.execute(input));
-                        tool_result_push(&mut session_context,&mut history, result, tool).await;
+                        let input = serde_json::from_str::<EditFileInput>(&tool.function.arguments)
+                            .map_err(|err| anyhow!(err));
+                        if let Ok(input) = input {
+                            let tool_permission =
+                                edit_file.check_permission(&input, &session_context);
+                            let final_permission = check_final_permission(
+                                &tool_pre_permission,
+                                &tool_permission,
+                                &session_context.mode,
+                                edit_file,
+                            );
+                            match final_permission.0 {
+                                PermissionLevel::Deny => {
+                                    tool_result_push(
+                                        &mut session_context,
+                                        &mut history,
+                                        Err(anyhow!(final_permission.1)),
+                                        tool,
+                                    )
+                                    .await;
+                                    continue;
+                                }
+                                PermissionLevel::Ask => {
+                                    let result = wait_permission_apply(&app,session_id, edit_file).await;
+                                    match result {
+                                        Ok(value) => {
+                                            match value.result {
+                                                PermissionResult::AlwaysAllow
+                                                | PermissionResult::Allow => {
+                                                    //这里放行，暂不需要逻辑处理
+                                                }
+                                                PermissionResult::Deny => {
+                                                    tool_result_push(
+                                                        &mut session_context,
+                                                        &mut history,
+                                                        Err(anyhow!(value.reason)),
+                                                        tool,
+                                                    )
+                                                    .await;
+                                                    continue;
+                                                }
+                                            }
+                                        }
+                                        Err(err) => {
+                                            tool_result_push(
+                                                &mut session_context,
+                                                &mut history,
+                                                Err(anyhow!(err)),
+                                                tool,
+                                            )
+                                            .await;
+                                            continue;
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                            let result = edit_file.execute(input);
+
+                            tool_result_push(&mut session_context, &mut history, result, tool)
+                                .await;
+                        } else if let Err(err) = input {
+                            tool_result_push(&mut session_context, &mut history, Err(err), tool)
+                                .await;
+                        }
                     }
                     ("read_file", Some(ToolsEnum::ReadFile(read_file))) => {
-                        let result =
-                            serde_json::from_str::<ReadFileInput>(&tool.function.arguments)
-                                .map_err(|err| anyhow!(err))
-                                .and_then(|input| read_file.execute(input));
-                        tool_result_push(&mut session_context,&mut history, result, tool).await;
+                        let input = serde_json::from_str::<ReadFileInput>(&tool.function.arguments)
+                            .map_err(|err| anyhow!(err));
+                        if let Ok(input) = input {
+                            let tool_permission =
+                                read_file.check_permission(&input, &session_context);
+                            let final_permission = check_final_permission(
+                                &tool_pre_permission,
+                                &tool_permission,
+                                &session_context.mode,
+                                read_file,
+                            );
+                            match final_permission.0 {
+                                PermissionLevel::Deny => {
+                                    tool_result_push(
+                                        &mut session_context,
+                                        &mut history,
+                                        Err(anyhow!(final_permission.1)),
+                                        tool,
+                                    )
+                                    .await;
+                                    continue;
+                                }
+                                PermissionLevel::Ask => {
+                                    let result = wait_permission_apply(&app,session_id, read_file).await;
+                                    match result {
+                                        Ok(value) => {
+                                            match value.result {
+                                                PermissionResult::AlwaysAllow
+                                                | PermissionResult::Allow => {
+                                                    //这里放行，暂不需要逻辑处理
+                                                }
+                                                PermissionResult::Deny => {
+                                                    tool_result_push(
+                                                        &mut session_context,
+                                                        &mut history,
+                                                        Err(anyhow!(value.reason)),
+                                                        tool,
+                                                    )
+                                                    .await;
+                                                    continue;
+                                                }
+                                            }
+                                        }
+                                        Err(err) => {
+                                            tool_result_push(
+                                                &mut session_context,
+                                                &mut history,
+                                                Err(anyhow!(err)),
+                                                tool,
+                                            )
+                                            .await;
+                                            continue;
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                            let result = read_file.execute(input);
+
+                            tool_result_push(&mut session_context, &mut history, result, tool)
+                                .await;
+                        } else if let Err(err) = input {
+                            tool_result_push(&mut session_context, &mut history, Err(err), tool)
+                                .await;
+                        }
                     }
                     ("shell", Some(ToolsEnum::Shell(shell))) => {
-                        let result = serde_json::from_str::<ShellInput>(&tool.function.arguments)
-                            .map_err(|err| anyhow!(err))
-                            .and_then(|input| shell.execute(input));
-                        tool_result_push(&mut session_context,&mut history, result, tool).await;
+                        let input = serde_json::from_str::<ShellInput>(&tool.function.arguments)
+                            .map_err(|err| anyhow!(err));
+                        if let Ok(input) = input {
+                            let tool_permission = shell.check_permission(&input, &session_context);
+                            let final_permission = check_final_permission(
+                                &tool_pre_permission,
+                                &tool_permission,
+                                &session_context.mode,
+                                shell,
+                            );
+                            match final_permission.0 {
+                                PermissionLevel::Deny => {
+                                    tool_result_push(
+                                        &mut session_context,
+                                        &mut history,
+                                        Err(anyhow!(final_permission.1)),
+                                        tool,
+                                    )
+                                    .await;
+                                    continue;
+                                }
+                                PermissionLevel::Ask => {
+                                    let result = wait_permission_apply(&app,session_id, shell).await;
+                                    match result {
+                                        Ok(value) => {
+                                            match value.result {
+                                                PermissionResult::AlwaysAllow
+                                                | PermissionResult::Allow => {
+                                                    //这里放行，暂不需要逻辑处理
+                                                }
+                                                PermissionResult::Deny => {
+                                                    tool_result_push(
+                                                        &mut session_context,
+                                                        &mut history,
+                                                        Err(anyhow!(value.reason)),
+                                                        tool,
+                                                    )
+                                                    .await;
+                                                    continue;
+                                                }
+                                            }
+                                        }
+                                        Err(err) => {
+                                            tool_result_push(
+                                                &mut session_context,
+                                                &mut history,
+                                                Err(anyhow!(err)),
+                                                tool,
+                                            )
+                                            .await;
+                                            continue;
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                            let result = shell.execute(input);
+
+                            tool_result_push(&mut session_context, &mut history, result, tool)
+                                .await;
+                        } else if let Err(err) = input {
+                            tool_result_push(&mut session_context, &mut history, Err(err), tool)
+                                .await;
+                        }
                     }
                     _ => {
-                        tool_result_push(&mut session_context,
+                        tool_result_push(
+                            &mut session_context,
                             &mut history,
                             anyhow::Ok(format!("该{}工具未实现", &tool.function.name)),
                             tool,
-                        ).await;
+                        )
+                        .await;
                         println!("工具：{}，还没有实现", tool.function.name);
                     }
                 }
@@ -575,7 +844,7 @@ async fn call(app:AppHandle,session_id: &str, question: &str) -> Result<InputMes
                 reasoning_content: first_content_message.reasoning_content.clone(),
                 tool_calls: None,
                 tool_call_id: None,
-                session_context:Some(session_context.clone()),
+                session_context: Some(session_context.clone()),
             };
             history.push(message.clone());
             let mut history_map = HISTORY_MAP.lock().await;

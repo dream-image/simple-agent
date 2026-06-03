@@ -7,8 +7,8 @@ import {
   type CSSProperties,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import { Button, ConfigProvider, Empty, Popover } from "antd";
+import { emit, listen } from "@tauri-apps/api/event";
+import { Button, ConfigProvider, Empty, Modal, Popover } from "antd";
 import type { MenuProps } from "antd";
 import { Bubble, Conversations, Sender, Think, XProvider } from "@ant-design/x";
 import type { BubbleItemType, ConversationItemType } from "@ant-design/x";
@@ -39,6 +39,11 @@ type AgentToolCallEvent = {
   arguments: string;
   content: string;
   success: boolean;
+};
+
+type PermissionApplyEvent = {
+  name: string;
+  content: string;
 };
 
 type ToolCallMessage = {
@@ -105,6 +110,8 @@ function App() {
   const [loadingSession, setLoadingSession] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const [bootError, setBootError] = useState("");
+  const [permissionRequest, setPermissionRequest] =
+    useState<PermissionApplyEvent | null>(null);
   const containRef = useRef<HTMLDivElement | null>(null);
   const streamTargetRef = useRef<Record<string, string>>({});
   const shouldAutoScrollRef = useRef(true);
@@ -207,8 +214,16 @@ function App() {
   useEffect(() => {
     let unlistenStream: (() => void) | undefined;
     let unlistenToolCall: (() => void) | undefined;
+    let unlistenPermission: (() => void) | undefined;
 
     async function bindEvents() {
+      unlistenPermission = await listen<PermissionApplyEvent>(
+        "apply_permission",
+        (event) => {
+          setPermissionRequest(event.payload);
+        },
+      );
+
       unlistenStream = await listen<AgentStreamEvent>("agent_stream", (event) => {
         const { sessionId, data } = event.payload;
         const messageId = streamTargetRef.current[sessionId];
@@ -286,8 +301,17 @@ function App() {
     return () => {
       unlistenStream?.();
       unlistenToolCall?.();
+      unlistenPermission?.();
     };
   }, []);
+
+  const replyPermission = async (result: "Allow" | "Deny") => {
+    await emit("permission_callback", {
+      result,
+      reason: result === "Deny" ? "用户拒绝授权" : "",
+    });
+    setPermissionRequest(null);
+  };
 
   const handleMockMessages = () => {
     const sessionId = activeKey;
@@ -610,6 +634,16 @@ function App() {
             </div>
           </section>
         </main>
+        <Modal
+          title={permissionRequest?.name ?? "权限申请"}
+          open={Boolean(permissionRequest)}
+          okText="确认"
+          cancelText="拒绝"
+          onOk={() => replyPermission("Allow")}
+          onCancel={() => replyPermission("Deny")}
+        >
+          {permissionRequest?.content}
+        </Modal>
       </XProvider>
     </ConfigProvider>
   );

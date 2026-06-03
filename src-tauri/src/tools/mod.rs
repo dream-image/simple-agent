@@ -6,6 +6,13 @@ pub mod shell;
 use schemars::JsonSchema;
 use serde_json::{Value, json, to_value};
 
+#[derive(Ord, PartialOrd, Eq, PartialEq)]
+pub enum ToolEffect{
+    ReadOnly,
+    Write,
+    Execute
+}
+
 pub trait Tool {
     //这里的&str等价于&'static str  只是 'static 被省略了
     const NAME: &str;
@@ -14,7 +21,7 @@ pub trait Tool {
     type Input: JsonSchema;
     type Output;
     fn execute(&self, input: Self::Input) -> Self::Output;
-
+    fn effect_type(&self,input: Option<&Self::Input>)->ToolEffect;
     fn definition() -> Value {
         let mut schema = to_value(schemars::schema_for!(Self::Input)).unwrap();
         if let Value::Object(map) = &mut schema {

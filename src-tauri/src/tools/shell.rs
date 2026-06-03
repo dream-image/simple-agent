@@ -1,8 +1,10 @@
-use crate::tools::Tool;
+use crate::tools::{Tool, ToolEffect};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::process::Command;
 use anyhow::anyhow;
+use crate::context::session_context::SessionContext;
+use crate::permission::{Permission, PermissionLevel};
 
 pub struct Shell {}
 
@@ -33,5 +35,15 @@ impl Tool for Shell {
         }else{
             Err(anyhow!(String::from_utf8_lossy(&res.stderr).to_string()))
         }
+    }
+    fn effect_type(&self,_:Option<&Self::Input>) -> ToolEffect {
+        ToolEffect::Execute
+    }
+}
+
+impl Permission for Shell {
+
+    fn check_permission(&self,input:&Self::Input,session_context: &SessionContext) -> PermissionLevel {
+        PermissionLevel::Allow
     }
 }

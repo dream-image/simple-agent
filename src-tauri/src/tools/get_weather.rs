@@ -1,6 +1,9 @@
-use crate::tools::Tool;
+use crate::tools::{Tool, ToolEffect};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use crate::context::session_context::SessionContext;
+use crate::permission::{Permission, PermissionLevel};
+
 pub struct GetWeather {}
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema)]
@@ -20,4 +23,15 @@ impl Tool for GetWeather {
         println!("工具入参：{:?}", input);
         format!("{} 温度是24度,无风", input.city)
     }
+    fn effect_type(&self,_:Option<&Self::Input>) -> ToolEffect {
+        ToolEffect::ReadOnly
+    }
 }
+
+impl Permission for GetWeather {
+
+    fn check_permission(&self,input:&Self::Input,session_context: &SessionContext) -> PermissionLevel {
+        PermissionLevel::Allow
+    }
+}
+

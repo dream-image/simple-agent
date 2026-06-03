@@ -1,10 +1,13 @@
-use crate::tools::Tool;
+use crate::tools::{Tool, ToolEffect};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{ Write};
 use std::path::PathBuf;
+use tauri::window::Effect;
+use crate::context::session_context::SessionContext;
 use crate::path::get_current_work_path;
+use crate::permission::{Permission, PermissionLevel};
 
 pub struct EditFile {}
 
@@ -43,4 +46,14 @@ impl Tool for EditFile {
         fs::write(&path, content.as_bytes())?;
         Ok("修改成功".to_string())
     }
+    fn effect_type(&self,_:Option<&Self::Input>) -> ToolEffect {
+        ToolEffect::Write
+    }
 }
+
+impl Permission for EditFile {
+    fn check_permission(&self,input:&Self::Input,session_context: &SessionContext) -> PermissionLevel {
+        PermissionLevel::Ask
+    }
+}
+
