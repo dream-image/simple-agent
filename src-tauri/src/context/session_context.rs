@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 use tokio::sync::Mutex;
+use crate::context::workspace::Workspace;
 
 #[derive(Serialize, Clone, Debug, Deserialize, Default)]
 pub struct SessionContext {
@@ -10,13 +11,24 @@ pub struct SessionContext {
     pub total_token: u32,
     pub mode: PermissionMod,
     pub permission: ToolsPermission,
+    pub workspace: Workspace,
 }
 
 
 
 
 impl SessionContext {
-    pub fn new(token: u32, total_token: u32) -> Self {
+    pub fn new(token: Option<u32>, total_token: Option<u32>) -> Self {
+        let token = if let Some(token) = token {
+            token
+        }else {
+            0
+        };
+        let total_token = if let Some(total_token) = total_token {
+            total_token
+        }else{
+            100_0000
+        };
         Self {
             token,
             total_token,

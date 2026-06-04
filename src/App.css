@@ -77,6 +77,71 @@ textarea {
 .conversation-list {
   flex: 1;
   overflow: auto;
+  padding: 6px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.conversation-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.conversation-section-title {
+  padding: 0 10px;
+  color: #9ca3af;
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 32px;
+}
+
+.project-conversation-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.project-title {
+  height: 36px;
+  min-height: 36px;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 10px;
+  color: #525866;
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.project-title span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-items {
+  padding: 0;
+  overflow: visible;
+  gap: 2px;
+}
+
+.conversation-items .ant-x-conversations-item {
+  height: 36px;
+  min-height: 36px;
+  padding-inline: 10px;
+  border-radius: 10px;
+}
+
+.project-conversation-items .ant-x-conversations-item {
+  padding-inline: 34px 10px;
+}
+
+.conversation-items .ant-x-conversations-item-active {
+  background: #e7e7ee;
 }
 
 .chat-panel {

@@ -1,3 +1,4 @@
+use std::fmt::Display;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Clone, Debug, Deserialize)]
@@ -10,15 +11,21 @@ pub struct Workspace{
 
 impl Default for Workspace {
     fn default() -> Workspace {
+        let current_dir =std::env::current_dir().unwrap().to_str().unwrap().to_string();
         Self{
-            cwd: "/".to_string(),
-            project_root: "/".to_string(),
-            read_root: "/".to_string(),
-            write_root: "/".to_string(),
+            cwd:current_dir.clone(),
+            project_root: current_dir.clone(),
+            read_root: current_dir.clone(),
+            write_root:current_dir.clone(),
         }
     }
 }
 
+impl Display for Workspace {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", serde_json::to_string(&self).unwrap())
+    }
+}
 
 
 

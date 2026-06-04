@@ -442,22 +442,28 @@ async fn agent_init() -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn create_session(session_id: &str) -> Result<(), String> {
+async fn create_session(session_id: &str) -> Result<SessionContext, String> {
     let mut history_map = HISTORY_MAP.lock().await;
     history_map
         .entry(session_id.to_string())
         .or_insert_with(|| {
             vec![InputMessage {
                 role: Role::System,
-                content: Some(get_system_prompt()),
+                content: Some(get_system_prompt(None)),
                 reasoning_content: None,
                 tool_calls: None,
                 tool_call_id: None,
                 session_context: None,
             }]
         });
+    let mut session_context_map = SESSION_CONTEXT_MAP.lock().await;
+    let session_context = session_context_map
+        .entry(session_id.to_string())
+        .or_insert(Arc::new(Mutex::new(SessionContext::new(None,None))))
+        .clone();
+    let session_context = session_context.lock().await;
 
-    Ok(())
+    Ok(session_context.clone())
 }
 
 #[tauri::command]
@@ -474,7 +480,7 @@ async fn set_permission_mode(session_id: &str, mode: PermissionMod) -> Result<Se
     let mut session_context_map = SESSION_CONTEXT_MAP.lock().await;
     let session_context = session_context_map
         .entry(session_id.to_string())
-        .or_insert(Arc::new(Mutex::new(SessionContext::new(0, 100_0000))))
+        .or_insert(Arc::new(Mutex::new(SessionContext::new(None,None))))
         .clone();
     let mut session_context = session_context.lock().await;
     session_context.mode = mode;
@@ -501,7 +507,7 @@ async fn call(app: AppHandle, session_id: &str, question: &str) -> Result<InputM
     let mut session_context_map = SESSION_CONTEXT_MAP.lock().await;
     let session_context = session_context_map
         .entry(session_id.to_string())
-        .or_insert(Arc::new(Mutex::new(SessionContext::new(0, 100_0000))))
+        .or_insert(Arc::new(Mutex::new(SessionContext::new(None,None))))
         .clone();
     let mut session_context = session_context.lock().await;
 

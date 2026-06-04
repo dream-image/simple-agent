@@ -14,6 +14,7 @@ import {
   DownOutlined,
   EditOutlined,
   FileSearchOutlined,
+  FolderOutlined,
   SafetyOutlined,
   StopOutlined,
   ThunderboltOutlined,
@@ -34,6 +35,7 @@ type SessionContext = {
   token: number;
   total_token: number;
   mode: PermissionMode;
+  workspace: WorkspaceContext;
 };
 
 type PermissionMode =
@@ -42,6 +44,13 @@ type PermissionMode =
   | "Plan"
   | "DontAsk"
   | "BypassPermissions";
+
+type WorkspaceContext = {
+  cwd: string;
+  project_root: string;
+  read_root: string;
+  write_root: string;
+};
 
 type AgentStreamEvent = {
   sessionId: string;
@@ -166,6 +175,21 @@ const getPermissionModeOption = (mode: PermissionMode) =>
 
 const getPermissionModeLabel = (mode: PermissionMode) =>
   getPermissionModeOption(mode).label;
+
+const getProjectName = (projectRoot: string) => {
+  const normalized = projectRoot.replace(/\/+$/, "");
+  return normalized.split("/").filter(Boolean).pop() || projectRoot;
+};
+
+const getSessionProjectRoot = (session: ChatSession) =>
+  session.sessionContext?.workspace?.project_root?.trim() || "/";
+
+type ProjectConversationGroup = {
+  key: string;
+  name: string;
+  projectRoot: string;
+  items: ConversationItemType[];
+};
 
 const getErrorMessage = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
@@ -376,8 +400,21 @@ function App() {
     async function init() {
       try {
         await invoke("agent_init");
-        await invoke("create_session", { sessionId: firstSession.key });
+        const sessionContext = await invoke<SessionContext>("create_session", {
+          sessionId: firstSession.key,
+        });
         if (alive) {
+          setSessions((current) =>
+            current.map((session) =>
+              session.key === firstSession.key
+                ? {
+                    ...session,
+                    permissionMode: sessionContext.mode,
+                    sessionContext,
+                  }
+                : session,
+            ),
+          );
           setReady(true);
         }
       } catch (error) {
@@ -408,8 +445,41 @@ function App() {
       containRef.current?.scrollTo(0, containRef.current.scrollHeight);
     }
   }, [activeSession?.messages]);
-  const conversationItems = useMemo<ConversationItemType[]>(
-    () => sessions.map(({ key, label }) => ({ key, label })),
+  const groupedConversationItems = useMemo(
+    () => {
+      const conversationItems: ConversationItemType[] = [];
+      const projectGroups: ProjectConversationGroup[] = [];
+      const projectMap = new Map<string, ProjectConversationGroup>();
+
+      sessions.forEach((session) => {
+        const item = {
+          key: session.key,
+          label: session.label,
+        };
+        const projectRoot = getSessionProjectRoot(session);
+
+        if (projectRoot === "/") {
+          conversationItems.push(item);
+          return;
+        }
+
+        let group = projectMap.get(projectRoot);
+        if (!group) {
+          group = {
+            key: `project:${projectRoot}`,
+            name: getProjectName(projectRoot),
+            projectRoot,
+            items: [],
+          };
+          projectMap.set(projectRoot, group);
+          projectGroups.push(group);
+        }
+
+        group.items.push(item);
+      });
+
+      return { conversationItems, projectGroups };
+    },
     [sessions],
   );
 
@@ -699,7 +769,20 @@ function App() {
     setActiveKey(session.key);
 
     try {
-      await invoke("create_session", { sessionId: session.key });
+      const sessionContext = await invoke<SessionContext>("create_session", {
+        sessionId: session.key,
+      });
+      setSessions((current) =>
+        current.map((item) =>
+          item.key === session.key
+            ? {
+                ...item,
+                permissionMode: sessionContext.mode,
+                sessionContext,
+              }
+            : item,
+        ),
+      );
     } catch (error) {
       setBootError(getErrorMessage(error));
     }
@@ -719,7 +802,20 @@ function App() {
     try {
       await invoke("delete_session", { sessionId });
       if (replacement) {
-        await invoke("create_session", { sessionId: replacement.key });
+        const sessionContext = await invoke<SessionContext>("create_session", {
+          sessionId: replacement.key,
+        });
+        setSessions((current) =>
+          current.map((item) =>
+            item.key === replacement.key
+              ? {
+                  ...item,
+                  permissionMode: sessionContext.mode,
+                  sessionContext,
+                }
+              : item,
+          ),
+        );
       }
     } catch (error) {
       setBootError(getErrorMessage(error));
@@ -875,13 +971,41 @@ function App() {
               </Button>
               {/*<Button onClick={handleMockMessages}>Mock</Button>*/}
             </div>
-            <Conversations
-              className="conversation-list"
-              activeKey={activeKey}
-              items={conversationItems}
-              menu={sessionMenu}
-              onActiveChange={setActiveKey}
-            />
+            <div className="conversation-list">
+              {groupedConversationItems.conversationItems.length ? (
+                <section className="conversation-section">
+                  <div className="conversation-section-title">对话</div>
+                  <Conversations
+                    className="conversation-items"
+                    activeKey={activeKey}
+                    items={groupedConversationItems.conversationItems}
+                    menu={sessionMenu}
+                    onActiveChange={setActiveKey}
+                  />
+                </section>
+              ) : null}
+
+              {groupedConversationItems.projectGroups.length ? (
+                <section className="conversation-section">
+                  <div className="conversation-section-title">项目</div>
+                  {groupedConversationItems.projectGroups.map((group) => (
+                    <div className="project-conversation-group" key={group.key}>
+                      <div className="project-title">
+                        <FolderOutlined />
+                        <span title={group.projectRoot}>{group.name}</span>
+                      </div>
+                      <Conversations
+                        className="conversation-items project-conversation-items"
+                        activeKey={activeKey}
+                        items={group.items}
+                        menu={sessionMenu}
+                        onActiveChange={setActiveKey}
+                      />
+                    </div>
+                  ))}
+                </section>
+              ) : null}
+            </div>
           </aside>
 
           <section className="chat-panel">
