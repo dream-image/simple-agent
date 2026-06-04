@@ -7,7 +7,7 @@ pub mod tools;
 
 use crate::context::session_context::{SessionContext, SESSION_CONTEXT_MAP};
 use crate::event::{wait_permission_apply, PermissionResult};
-use crate::permission::{check_final_permission, Permission, PermissionLevel};
+use crate::permission::{check_final_permission, Permission, PermissionLevel, PermissionMod};
 use crate::prompt::get_system_prompt;
 use crate::tools::edit_file::EditFile;
 use crate::tools::edit_file::ToolInput as EditFileInput;
@@ -338,7 +338,7 @@ async fn agent_call_stream(
         if event.data == "[DONE]" {
             break;
         }
-        println!("{:?}", event.data);
+        // println!("{:?}", event.data);
         let value = serde_json::from_str::<AiStreamResponse>(&event.data)?;
         ai_response.id = value.id;
         ai_response.model = value.model;
@@ -464,7 +464,21 @@ async fn create_session(session_id: &str) -> Result<(), String> {
 async fn delete_session(session_id: &str) -> Result<(), String> {
     let mut history_map = HISTORY_MAP.lock().await;
     history_map.remove(session_id);
+    let mut session_context_map = SESSION_CONTEXT_MAP.lock().await;
+    session_context_map.remove(session_id);
     Ok(())
+}
+
+#[tauri::command]
+async fn set_permission_mode(session_id: &str, mode: PermissionMod) -> Result<SessionContext, String> {
+    let mut session_context_map = SESSION_CONTEXT_MAP.lock().await;
+    let session_context = session_context_map
+        .entry(session_id.to_string())
+        .or_insert(Arc::new(Mutex::new(SessionContext::new(0, 100_0000))))
+        .clone();
+    let mut session_context = session_context.lock().await;
+    session_context.mode = mode;
+    Ok(session_context.clone())
 }
 
 #[tauri::command]
@@ -550,7 +564,7 @@ async fn call(app: AppHandle, session_id: &str, question: &str) -> Result<InputM
             let tools_map = TOOLS_MAP.lock().await;
             for tool in tool_calls {
                 let name = tool.function.name.as_str();
-
+                let tool_id = tool.id.as_str();
                 let tool_pre_permission = session_context.permission.check_permissions(name);
                 match (name, tools_map.get(name)) {
                     ("get_weather", Some(ToolsEnum::GetWeather(get_weather))) => {
@@ -578,14 +592,15 @@ async fn call(app: AppHandle, session_id: &str, question: &str) -> Result<InputM
                                     continue;
                                 }
                                 PermissionLevel::Ask => {
-                                    let result = wait_permission_apply(&app,session_id, get_weather).await;
+                                    let result = wait_permission_apply(&app,session_id, get_weather,tool_id).await;
                                     match result {
                                         Ok(value) => {
                                             match value.result {
                                                 PermissionResult::AlwaysAllow
-                                                | PermissionResult::Allow => {
-                                                    //这里放行，暂不需要逻辑处理
-                                                }
+                                                => {
+                                                    session_context.permission.ask_tools.remove(name);
+                                                    session_context.permission.allow_tools.insert(name.to_string());
+                                                },
                                                 PermissionResult::Deny => {
                                                     tool_result_push(
                                                         &mut session_context,
@@ -595,6 +610,9 @@ async fn call(app: AppHandle, session_id: &str, question: &str) -> Result<InputM
                                                     )
                                                     .await;
                                                     continue;
+                                                },
+                                                _=>{
+
                                                 }
                                             }
                                         }
@@ -645,13 +663,14 @@ async fn call(app: AppHandle, session_id: &str, question: &str) -> Result<InputM
                                     continue;
                                 }
                                 PermissionLevel::Ask => {
-                                    let result = wait_permission_apply(&app,session_id, edit_file).await;
+                                    let result = wait_permission_apply(&app,session_id, edit_file,tool_id).await;
                                     match result {
                                         Ok(value) => {
                                             match value.result {
                                                 PermissionResult::AlwaysAllow
-                                                | PermissionResult::Allow => {
-                                                    //这里放行，暂不需要逻辑处理
+                                                 => {
+                                                    session_context.permission.ask_tools.remove(name);
+                                                    session_context.permission.allow_tools.insert(name.to_string());
                                                 }
                                                 PermissionResult::Deny => {
                                                     tool_result_push(
@@ -662,6 +681,9 @@ async fn call(app: AppHandle, session_id: &str, question: &str) -> Result<InputM
                                                     )
                                                     .await;
                                                     continue;
+                                                },
+                                                _=>{
+
                                                 }
                                             }
                                         }
@@ -712,13 +734,14 @@ async fn call(app: AppHandle, session_id: &str, question: &str) -> Result<InputM
                                     continue;
                                 }
                                 PermissionLevel::Ask => {
-                                    let result = wait_permission_apply(&app,session_id, read_file).await;
+                                    let result = wait_permission_apply(&app,session_id, read_file,tool_id).await;
                                     match result {
                                         Ok(value) => {
                                             match value.result {
                                                 PermissionResult::AlwaysAllow
-                                                | PermissionResult::Allow => {
-                                                    //这里放行，暂不需要逻辑处理
+                                                => {
+                                                    session_context.permission.ask_tools.remove(name);
+                                                    session_context.permission.allow_tools.insert(name.to_string());
                                                 }
                                                 PermissionResult::Deny => {
                                                     tool_result_push(
@@ -729,6 +752,9 @@ async fn call(app: AppHandle, session_id: &str, question: &str) -> Result<InputM
                                                     )
                                                     .await;
                                                     continue;
+                                                },
+                                                _=>{
+
                                                 }
                                             }
                                         }
@@ -778,13 +804,14 @@ async fn call(app: AppHandle, session_id: &str, question: &str) -> Result<InputM
                                     continue;
                                 }
                                 PermissionLevel::Ask => {
-                                    let result = wait_permission_apply(&app,session_id, shell).await;
+                                    let result = wait_permission_apply(&app,session_id, shell,tool_id).await;
                                     match result {
                                         Ok(value) => {
                                             match value.result {
                                                 PermissionResult::AlwaysAllow
-                                                | PermissionResult::Allow => {
-                                                    //这里放行，暂不需要逻辑处理
+                                                => {
+                                                    session_context.permission.ask_tools.remove(name);
+                                                    session_context.permission.allow_tools.insert(name.to_string());
                                                 }
                                                 PermissionResult::Deny => {
                                                     tool_result_push(
@@ -795,6 +822,9 @@ async fn call(app: AppHandle, session_id: &str, question: &str) -> Result<InputM
                                                     )
                                                     .await;
                                                     continue;
+                                                },
+                                               _ =>{
+
                                                 }
                                             }
                                         }
@@ -865,6 +895,7 @@ pub fn run() {
             agent_init,
             create_session,
             delete_session,
+            set_permission_mode,
             call
         ])
         .run(tauri::generate_context!())

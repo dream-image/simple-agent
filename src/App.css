@@ -235,11 +235,43 @@ textarea {
   background: #ffffff;
 }
 
+.sender-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+}
+
+.permission-mode-button {
+  border-color: var(--permission-mode-border);
+  background: var(--permission-mode-background);
+  color: var(--permission-mode-color);
+  font-weight: 650;
+}
+
+.permission-mode-button:hover,
+.permission-mode-button:focus {
+  border-color: var(--permission-mode-color) !important;
+  color: var(--permission-mode-color) !important;
+}
+
+.permission-mode-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--permission-mode-color);
+  font-size: 15px;
+}
+
+.permission-mode-menu-item span:last-child {
+  color: #172033;
+}
+
 .bottom-bar {
   display: flex;
   align-items: center;
   width: fit-content;
-  margin-top: 4px;
   margin-left: auto;
   color: #334155;
 }

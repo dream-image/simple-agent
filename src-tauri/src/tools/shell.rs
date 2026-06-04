@@ -44,6 +44,6 @@ impl Tool for Shell {
 impl Permission for Shell {
 
     fn check_permission(&self,input:&Self::Input,session_context: &SessionContext) -> PermissionLevel {
-        PermissionLevel::Allow
+        PermissionLevel::Ask
     }
 }

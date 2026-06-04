@@ -31,7 +31,7 @@ impl Tool for GetWeather {
 impl Permission for GetWeather {
 
     fn check_permission(&self,input:&Self::Input,session_context: &SessionContext) -> PermissionLevel {
-        PermissionLevel::Allow
+        PermissionLevel::Ask
     }
 }
 

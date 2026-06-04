@@ -47,6 +47,6 @@ impl Tool for ReadFile {
 
 impl Permission for ReadFile {
     fn check_permission(&self,input:&Self::Input,session_context: &SessionContext) -> PermissionLevel {
-        PermissionLevel::Allow
+        PermissionLevel::Ask
     }
 }

@@ -1,4 +1,4 @@
-use std::cmp::max;
+use std::cmp::{max, min};
 use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 use crate::context::session_context::SessionContext;
@@ -44,7 +44,10 @@ impl ToolsPermission {
         if self.ask_tools.contains(tool_name){
             return PermissionLevel::Ask;
         }
-        PermissionLevel::Allow
+        if self.allow_tools.contains(tool_name){
+            return PermissionLevel::Allow;
+        }
+        PermissionLevel::Ask
 
     }
 }
@@ -73,12 +76,13 @@ pub trait Permission:Tool {
 
 pub fn check_final_permission<T:Tool>(pre_permission:&PermissionLevel, tool_permission:&PermissionLevel, permission_mod: &PermissionMod, tool:&T) ->(PermissionLevel,String){
     let name = T::NAME;
-    let permission = *max(pre_permission,tool_permission);
-    if permission == PermissionLevel::Deny{
-        return (permission,"没有权限调用该工具".to_string());
+    let permission = *min(pre_permission,tool_permission);
+    if *pre_permission == PermissionLevel::Deny|| *tool_permission == PermissionLevel::Deny {
+        return (PermissionLevel::Deny,"没有权限调用该工具".to_string());
     }
     match permission_mod {
         PermissionMod::Default => {
+
             return (permission,String::new());
         },
         PermissionMod::AcceptEdits => {

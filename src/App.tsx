@@ -8,8 +8,16 @@ import {
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
-import { Button, ConfigProvider, Empty, Modal, Popover } from "antd";
+import { Button, ConfigProvider, Dropdown, Empty, Modal, Popover } from "antd";
 import type { MenuProps } from "antd";
+import {
+  DownOutlined,
+  EditOutlined,
+  FileSearchOutlined,
+  SafetyOutlined,
+  StopOutlined,
+  ThunderboltOutlined,
+} from "@ant-design/icons";
 import { Bubble, Conversations, Sender, Think, XProvider } from "@ant-design/x";
 import type { BubbleItemType, ConversationItemType } from "@ant-design/x";
 import { XMarkdown } from "@ant-design/x-markdown";
@@ -25,7 +33,15 @@ type AgentReply = {
 type SessionContext = {
   token: number;
   total_token: number;
+  mode: PermissionMode;
 };
+
+type PermissionMode =
+  | "Default"
+  | "AcceptEdits"
+  | "Plan"
+  | "DontAsk"
+  | "BypassPermissions";
 
 type AgentStreamEvent = {
   sessionId: string;
@@ -44,6 +60,12 @@ type AgentToolCallEvent = {
 type PermissionApplyEvent = {
   name: string;
   content: string;
+  session_id: string;
+};
+
+type PermissionRequest = PermissionApplyEvent & {
+  sessionId: string;
+  toolId: string;
 };
 
 type ToolCallMessage = {
@@ -54,12 +76,25 @@ type ToolCallMessage = {
   success: boolean;
 };
 
+type AssistantMessagePart =
+  | {
+      type: "text";
+      id: string;
+      content: string;
+    }
+  | {
+      type: "tool";
+      id: string;
+      toolCall: ToolCallMessage;
+    };
+
 type ChatMessage = {
   id: string;
   role: "user" | "assistant";
   content: string;
   reasoningContent?: string;
   toolCalls?: ToolCallMessage[];
+  parts?: AssistantMessagePart[];
   loading?: boolean;
   streaming?: boolean;
   error?: boolean;
@@ -69,6 +104,7 @@ type ChatSession = {
   key: string;
   label: string;
   messages: ChatMessage[];
+  permissionMode: PermissionMode;
   sessionContext?: SessionContext | null;
 };
 
@@ -78,10 +114,102 @@ const createSession = (): ChatSession => ({
   key: makeId(),
   label: "新会话",
   messages: [],
+  permissionMode: "Default",
 });
+
+const permissionModeOptions = [
+  {
+    key: "Default",
+    label: "默认",
+    icon: <SafetyOutlined />,
+    color: "#2563eb",
+    border: "#93c5fd",
+    background: "#eff6ff",
+  },
+  {
+    key: "AcceptEdits",
+    label: "自动编辑",
+    icon: <EditOutlined />,
+    color: "#079455",
+    border: "#75e0a7",
+    background: "#ecfdf3",
+  },
+  {
+    key: "Plan",
+    label: "计划模式",
+    icon: <FileSearchOutlined />,
+    color: "#7a5af8",
+    border: "#c3b5fd",
+    background: "#f4f3ff",
+  },
+  {
+    key: "DontAsk",
+    label: "禁止询问",
+    icon: <StopOutlined />,
+    color: "#d92d20",
+    border: "#fda29b",
+    background: "#fffbfa",
+  },
+  {
+    key: "BypassPermissions",
+    label: "完全访问",
+    icon: <ThunderboltOutlined />,
+    color: "#e35300",
+    border: "#fd853a",
+    background: "#fff6ed",
+  },
+];
+
+const getPermissionModeOption = (mode: PermissionMode) =>
+  permissionModeOptions.find((item) => item.key === mode) ??
+  permissionModeOptions[0];
+
+const getPermissionModeLabel = (mode: PermissionMode) =>
+  getPermissionModeOption(mode).label;
 
 const getErrorMessage = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
+
+type PermissionLogEntry = {
+  time: string;
+  event: string;
+  detail?: unknown;
+};
+
+type PermissionLogWindow = typeof window & {
+  __permissionLogs?: () => PermissionLogEntry[];
+  __clearPermissionLogs?: () => void;
+};
+
+const PERMISSION_LOG_KEY = "simple-agent.permissionLogs";
+
+const readPermissionLogs = (): PermissionLogEntry[] => {
+  try {
+    const logs = JSON.parse(localStorage.getItem(PERMISSION_LOG_KEY) ?? "[]");
+    return Array.isArray(logs) ? (logs as PermissionLogEntry[]) : [];
+  } catch {
+    return [];
+  }
+};
+
+const logPermission = (event: string, detail?: unknown) => {
+  const entry = {
+    time: new Date().toISOString(),
+    event,
+    detail,
+  };
+
+  console.info(`[permission] ${event}`, detail ?? "");
+
+  try {
+    localStorage.setItem(
+      PERMISSION_LOG_KEY,
+      JSON.stringify([...readPermissionLogs(), entry].slice(-200)),
+    );
+  } catch {
+    return;
+  }
+};
 
 const getToolSummary = (content: string) => {
   const text = content.replace(/\s+/g, " ").trim();
@@ -90,6 +218,83 @@ const getToolSummary = (content: string) => {
   }
   return text.length > 140 ? `${text.slice(0, 140)}...` : text;
 };
+
+const getMessageParts = (message: ChatMessage): AssistantMessagePart[] =>
+  message.parts ??
+  (message.content
+    ? [{ type: "text", id: `${message.id}-text`, content: message.content }]
+    : []);
+
+const appendTextPart = (
+  message: ChatMessage,
+  content: string,
+): AssistantMessagePart[] => {
+  const parts = getMessageParts(message);
+  const lastPart = parts[parts.length - 1];
+
+  if (lastPart?.type === "text") {
+    return [
+      ...parts.slice(0, -1),
+      { ...lastPart, content: lastPart.content + content },
+    ];
+  }
+
+  return [...parts, { type: "text", id: makeId(), content }];
+};
+
+const upsertToolPart = (
+  message: ChatMessage,
+  toolCall: ToolCallMessage,
+): AssistantMessagePart[] => {
+  const parts = getMessageParts(message);
+  const index = parts.findIndex(
+    (part) => part.type === "tool" && part.toolCall.id === toolCall.id,
+  );
+  const toolPart: AssistantMessagePart = {
+    type: "tool",
+    id: `tool-${toolCall.id || makeId()}`,
+    toolCall,
+  };
+
+  if (index >= 0) {
+    return [
+      ...parts.slice(0, index),
+      toolPart,
+      ...parts.slice(index + 1),
+    ];
+  }
+
+  return [...parts, toolPart];
+};
+
+const renderToolCall = (toolCall: ToolCallMessage) => (
+  <details className="tool-call" key={toolCall.id}>
+    <summary>
+      <span className="tool-call-name">{toolCall.name}</span>
+      <span
+        className={
+          toolCall.success ? "tool-call-status success" : "tool-call-status error"
+        }
+      >
+        {toolCall.success ? "成功" : "失败"}
+      </span>
+      <span className="tool-call-summary">
+        {getToolSummary(toolCall.content)}
+      </span>
+    </summary>
+
+    <div className="tool-call-detail">
+      <div className="tool-call-section">
+        <div className="tool-call-label">参数</div>
+        <pre>{toolCall.arguments}</pre>
+      </div>
+      <div className="tool-call-section">
+        <div className="tool-call-label">结果</div>
+        <pre>{toolCall.content}</pre>
+      </div>
+    </div>
+  </details>
+);
 
 const isScrollAtBottom = (element: HTMLDivElement) =>
   element.scrollHeight - element.scrollTop - element.clientHeight < 8;
@@ -110,11 +315,60 @@ function App() {
   const [loadingSession, setLoadingSession] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const [bootError, setBootError] = useState("");
-  const [permissionRequest, setPermissionRequest] =
-    useState<PermissionApplyEvent | null>(null);
+  const [permissionQueue, setPermissionQueue] = useState<PermissionRequest[]>([]);
   const containRef = useRef<HTMLDivElement | null>(null);
   const streamTargetRef = useRef<Record<string, string>>({});
+  const permissionListenersRef = useRef<Record<string, () => void>>({});
   const shouldAutoScrollRef = useRef(true);
+
+  useEffect(() => {
+    const navigation = performance.getEntriesByType(
+      "navigation",
+    )[0] as PerformanceNavigationTiming | undefined;
+    const target = window as PermissionLogWindow;
+    const handlePageHide = (event: PageTransitionEvent) => {
+      logPermission("pagehide", { persisted: event.persisted });
+    };
+    const handleBeforeUnload = () => {
+      logPermission("beforeunload");
+    };
+    const handleError = (event: ErrorEvent) => {
+      logPermission("window error", {
+        message: event.message,
+        filename: event.filename,
+        lineno: event.lineno,
+        colno: event.colno,
+      });
+    };
+    const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
+      logPermission("unhandled rejection", {
+        reason: getErrorMessage(event.reason),
+      });
+    };
+
+    target.__permissionLogs = readPermissionLogs;
+    target.__clearPermissionLogs = () => {
+      localStorage.removeItem(PERMISSION_LOG_KEY);
+    };
+    logPermission("app mounted", { navigationType: navigation?.type });
+    window.addEventListener("pagehide", handlePageHide);
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    window.addEventListener("error", handleError);
+    window.addEventListener("unhandledrejection", handleUnhandledRejection);
+    import.meta.hot?.on("vite:beforeFullReload", (payload) => {
+      logPermission("vite beforeFullReload", payload);
+    });
+    import.meta.hot?.on("vite:beforeUpdate", (payload) => {
+      logPermission("vite beforeUpdate", payload);
+    });
+
+    return () => {
+      window.removeEventListener("pagehide", handlePageHide);
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+      window.removeEventListener("error", handleError);
+      window.removeEventListener("unhandledrejection", handleUnhandledRejection);
+    };
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -163,7 +417,10 @@ function App() {
     () =>
       (activeSession?.messages ?? []).map((message) => {
         const hasVisibleContent = Boolean(
-          message.content || message.reasoningContent || message.toolCalls?.length,
+          message.content ||
+            message.reasoningContent ||
+            message.parts?.length ||
+            message.toolCalls?.length,
         );
         const loading = Boolean(message.loading && !hasVisibleContent);
         const streaming = Boolean(message.streaming);
@@ -178,6 +435,7 @@ function App() {
           extraInfo: {
             reasoningContent: message.reasoningContent,
             toolCalls: message.toolCalls,
+            parts: message.parts,
             streaming,
           },
         };
@@ -211,20 +469,68 @@ function App() {
     }
   };
 
+  const cleanupPermissionListeners = (sessionId?: string) => {
+    Object.entries(permissionListenersRef.current).forEach(([key, unlisten]) => {
+      if (!sessionId || key.startsWith(`${sessionId}_`)) {
+        unlisten();
+        delete permissionListenersRef.current[key];
+      }
+    });
+  };
+
+  const cleanupPermissionListener = (key: string) => {
+    permissionListenersRef.current[key]?.();
+    delete permissionListenersRef.current[key];
+  };
+
+  const listenPermissionRequest = async (sessionId: string, toolId: string) => {
+    const key = `${sessionId}_${toolId}`;
+
+    if (permissionListenersRef.current[key]) {
+      logPermission("listener exists", { sessionId, toolId });
+      return;
+    }
+
+    logPermission("listen", { sessionId, toolId });
+    const unlisten = await listen<PermissionApplyEvent>(
+      `apply_permission_${sessionId}_${toolId}`,
+      (event) => {
+        const payload = event.payload;
+        logPermission("apply received", {
+          sessionId: payload.session_id || sessionId,
+          toolId,
+          name: payload.name,
+        });
+        setPermissionQueue((current) => [
+          ...current,
+          {
+            ...payload,
+            sessionId: payload.session_id || sessionId,
+            toolId,
+          },
+        ]);
+        cleanupPermissionListener(key);
+      },
+    );
+
+    permissionListenersRef.current[key] = unlisten;
+  };
+
   useEffect(() => {
-    let unlistenStream: (() => void) | undefined;
-    let unlistenToolCall: (() => void) | undefined;
-    let unlistenPermission: (() => void) | undefined;
+    let disposed = false;
+    const unlisteners: (() => void)[] = [];
+
+    const addUnlistener = (unlisten: () => void) => {
+      if (disposed) {
+        unlisten();
+        return;
+      }
+
+      unlisteners.push(unlisten);
+    };
 
     async function bindEvents() {
-      unlistenPermission = await listen<PermissionApplyEvent>(
-        "apply_permission",
-        (event) => {
-          setPermissionRequest(event.payload);
-        },
-      );
-
-      unlistenStream = await listen<AgentStreamEvent>("agent_stream", (event) => {
+      addUnlistener(await listen<AgentStreamEvent>("agent_stream", (event) => {
         const { sessionId, data } = event.payload;
         const messageId = streamTargetRef.current[sessionId];
 
@@ -241,6 +547,17 @@ function App() {
             typeof delta?.reasoning_content === "string"
               ? delta.reasoning_content
               : "";
+          const toolCalls = Array.isArray(delta?.tool_calls)
+            ? delta.tool_calls
+            : [];
+
+          toolCalls.forEach((item) => {
+            const toolId = typeof item?.id === "string" ? item.id : "";
+
+            if (toolId) {
+              void listenPermissionRequest(sessionId, toolId);
+            }
+          });
 
           if (!content && !reasoningContent) {
             return;
@@ -250,15 +567,16 @@ function App() {
             ...message,
             content: message.content + content,
             reasoningContent: `${message.reasoningContent ?? ""}${reasoningContent}`,
+            parts: content ? appendTextPart(message, content) : message.parts,
             loading: false,
             streaming: true,
           }));
         } catch {
           return;
         }
-      });
+      }));
 
-      unlistenToolCall = await listen<AgentToolCallEvent>(
+      addUnlistener(await listen<AgentToolCallEvent>(
         "agent_tool_call",
         (event) => {
           const payload = event.payload;
@@ -288,29 +606,64 @@ function App() {
             return {
               ...message,
               toolCalls,
+              parts: upsertToolPart(message, toolCall),
               loading: false,
               streaming: true,
             };
           });
         },
-      );
+      ));
     }
 
     bindEvents();
 
     return () => {
-      unlistenStream?.();
-      unlistenToolCall?.();
-      unlistenPermission?.();
+      disposed = true;
+      unlisteners.forEach((unlisten) => unlisten());
+      cleanupPermissionListeners();
     };
   }, []);
 
-  const replyPermission = async (result: "Allow" | "Deny") => {
-    await emit("permission_callback", {
+  const replyPermission = async (result: "AlwaysAllow" | "Allow" | "Deny") => {
+    const request = permissionQueue[0];
+
+    if (!request) {
+      logPermission("reply without request", { result });
+      return;
+    }
+
+    logPermission("reply", {
+      sessionId: request.sessionId,
+      toolId: request.toolId,
+      name: request.name,
+      result,
+    });
+    await emit(`permission_callback_${request.sessionId}_${request.toolId}`, {
       result,
       reason: result === "Deny" ? "用户拒绝授权" : "",
     });
-    setPermissionRequest(null);
+    setPermissionQueue((current) => current.slice(1));
+  };
+
+  const permissionRequest = permissionQueue[0] ?? null;
+  const activePermissionMode = activeSession?.permissionMode ?? "Default";
+  const activePermissionModeOption =
+    getPermissionModeOption(activePermissionMode);
+  const permissionModeMenu: MenuProps = {
+    selectedKeys: [activePermissionMode],
+    items: permissionModeOptions.map((item) => ({
+      key: item.key,
+      label: (
+        <span
+          className="permission-mode-menu-item"
+          style={{ "--permission-mode-color": item.color } as CSSProperties}
+        >
+          {item.icon}
+          <span>{item.label}</span>
+        </span>
+      ),
+    })),
+    onClick: ({ key }) => handlePermissionModeChange(key as PermissionMode),
   };
 
   const handleMockMessages = () => {
@@ -368,6 +721,43 @@ function App() {
       if (replacement) {
         await invoke("create_session", { sessionId: replacement.key });
       }
+    } catch (error) {
+      setBootError(getErrorMessage(error));
+    }
+  };
+
+  const handlePermissionModeChange = async (mode: PermissionMode) => {
+    const sessionId = activeKey;
+    setSessions((current) =>
+      current.map((session) =>
+        session.key === sessionId
+          ? {
+              ...session,
+              permissionMode: mode,
+              sessionContext: session.sessionContext
+                ? { ...session.sessionContext, mode }
+                : session.sessionContext,
+            }
+          : session,
+      ),
+    );
+
+    try {
+      const sessionContext = await invoke<SessionContext>("set_permission_mode", {
+        sessionId,
+        mode,
+      });
+      setSessions((current) =>
+        current.map((session) =>
+          session.key === sessionId
+            ? {
+                ...session,
+                permissionMode: sessionContext.mode,
+                sessionContext,
+              }
+            : session,
+        ),
+      );
     } catch (error) {
       setBootError(getErrorMessage(error));
     }
@@ -432,8 +822,9 @@ function App() {
 
       updateMessage(sessionId, assistantMessage.id, (message) => ({
         ...message,
-        content: reply.content || message.content,
-        reasoningContent: reply.reasoning_content || message.reasoningContent,
+        content: message.content || reply.content,
+        reasoningContent: message.reasoningContent || reply.reasoning_content || undefined,
+        parts: message.parts ?? (reply.content ? appendTextPart(message, reply.content) : undefined),
         loading: false,
         streaming: false,
       }));
@@ -441,7 +832,11 @@ function App() {
         setSessions((current) =>
           current.map((session) =>
             session.key === sessionId
-              ? { ...session, sessionContext }
+              ? {
+                  ...session,
+                  permissionMode: sessionContext.mode,
+                  sessionContext,
+                }
               : session,
           ),
         );
@@ -455,6 +850,7 @@ function App() {
         error: true,
       }));
     } finally {
+      cleanupPermissionListeners(sessionId);
       delete streamTargetRef.current[sessionId];
       setLoadingSession((current) => (current === sessionId ? null : current));
     }
@@ -520,6 +916,9 @@ function App() {
                         )
                           ? (info.extraInfo.toolCalls as ToolCallMessage[])
                           : [];
+                        const parts = Array.isArray(info.extraInfo?.parts)
+                          ? (info.extraInfo.parts as AssistantMessagePart[])
+                          : [];
                         const streaming = Boolean(info.extraInfo?.streaming);
                         const markdownProps = {
                           streaming: {
@@ -539,46 +938,31 @@ function App() {
                                 <XMarkdown content={reasoningContent} {...markdownProps} />
                               </Think>
                             ) : null}
-                            {toolCalls.length ? (
+                            {parts.length ? (
+                              parts.map((part) =>
+                                part.type === "text" ? (
+                                  <XMarkdown
+                                    key={part.id}
+                                    content={part.content}
+                                    {...markdownProps}
+                                  />
+                                ) : (
+                                  <div className="tool-call-list" key={part.id}>
+                                    {renderToolCall(part.toolCall)}
+                                  </div>
+                                ),
+                              )
+                            ) : toolCalls.length ? (
                               <div className="tool-call-list">
-                                {toolCalls.map((toolCall) => (
-                                  <details className="tool-call" key={toolCall.id}>
-                                    <summary>
-                                      <span className="tool-call-name">
-                                        {toolCall.name}
-                                      </span>
-                                      <span
-                                        className={
-                                          toolCall.success
-                                            ? "tool-call-status success"
-                                            : "tool-call-status error"
-                                        }
-                                      >
-                                        {toolCall.success ? "成功" : "失败"}
-                                      </span>
-                                      <span className="tool-call-summary">
-                                        {getToolSummary(toolCall.content)}
-                                      </span>
-                                    </summary>
-
-                                    <div className="tool-call-detail">
-                                      <div className="tool-call-section">
-                                        <div className="tool-call-label">参数</div>
-                                        <pre>{toolCall.arguments}</pre>
-                                      </div>
-                                      <div className="tool-call-section">
-                                        <div className="tool-call-label">结果</div>
-                                        <pre>{toolCall.content}</pre>
-                                      </div>
-                                    </div>
-                                  </details>
-                                ))}
+                                {toolCalls.map(renderToolCall)}
                               </div>
                             ) : null}
                             {/*<Streamdown mode="streaming" parseIncompleteMarkdown isAnimating={streaming}>
                               {String(content)}
                             </Streamdown>*/}
-                            <XMarkdown content={String(content)} {...markdownProps} />
+                            {parts.length ? null : (
+                              <XMarkdown content={String(content)} {...markdownProps} />
+                            )}
                           </div>
                         );
                       },
@@ -599,47 +983,80 @@ function App() {
                 submitType="enter"
                 onChange={setInput}
                 onSubmit={handleSubmit}
-              />
-              {activeSession?.sessionContext ? (
-                <Popover
-                  content={
-                    <div className="token-popover">
-                      <div>
-                        已用：{activeSession.sessionContext.token.toLocaleString()}
-                      </div>
-                      <div>
-                        总量：
-                        {activeSession.sessionContext.total_token.toLocaleString()}
-                      </div>
-                      <div>
-                        剩余：
-                        {Math.max(
-                          0,
-                          activeSession.sessionContext.total_token -
-                            activeSession.sessionContext.token,
-                        ).toLocaleString()}
-                      </div>
-                    </div>
-                  }
-                  placement="topLeft"
-                  trigger="hover"
-                >
-                  <div className="bottom-bar">
-                    <div className="token-ring" style={tokenRingStyle}>
-                      <span>{tokenPercent}</span>
-                    </div>
+                footer={
+                  <div className="sender-footer">
+                    <Dropdown menu={permissionModeMenu} trigger={["click"]}>
+                      <Button
+                        className="permission-mode-button"
+                        icon={activePermissionModeOption.icon}
+                        style={
+                          {
+                            "--permission-mode-color":
+                              activePermissionModeOption.color,
+                            "--permission-mode-border":
+                              activePermissionModeOption.border,
+                            "--permission-mode-background":
+                              activePermissionModeOption.background,
+                          } as CSSProperties
+                        }
+                        onClick={(event) => event.preventDefault()}
+                      >
+                        {getPermissionModeLabel(activePermissionMode)}
+                        <DownOutlined />
+                      </Button>
+                    </Dropdown>
+                    {activeSession?.sessionContext ? (
+                      <Popover
+                        content={
+                          <div className="token-popover">
+                            <div>
+                              已用：
+                              {activeSession.sessionContext.token.toLocaleString()}
+                            </div>
+                            <div>
+                              总量：
+                              {activeSession.sessionContext.total_token.toLocaleString()}
+                            </div>
+                            <div>
+                              剩余：
+                              {Math.max(
+                                0,
+                                activeSession.sessionContext.total_token -
+                                  activeSession.sessionContext.token,
+                              ).toLocaleString()}
+                            </div>
+                          </div>
+                        }
+                        placement="topLeft"
+                        trigger="hover"
+                      >
+                        <div className="bottom-bar">
+                          <div className="token-ring" style={tokenRingStyle}>
+                            <span>{tokenPercent}</span>
+                          </div>
+                        </div>
+                      </Popover>
+                    ) : null}
                   </div>
-                </Popover>
-              ) : null}
+                }
+              />
             </div>
           </section>
         </main>
         <Modal
           title={permissionRequest?.name ?? "权限申请"}
           open={Boolean(permissionRequest)}
-          okText="确认"
-          cancelText="拒绝"
-          onOk={() => replyPermission("Allow")}
+          footer={[
+            <Button key="deny" onClick={() => replyPermission("Deny")}>
+              拒绝
+            </Button>,
+            <Button key="allow" onClick={() => replyPermission("Allow")}>
+              允许
+            </Button>,
+            <Button key="always" type="primary" onClick={() => replyPermission("AlwaysAllow")}>
+              总是允许
+            </Button>,
+          ]}
           onCancel={() => replyPermission("Deny")}
         >
           {permissionRequest?.content}

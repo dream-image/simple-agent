@@ -12,6 +12,9 @@ pub struct SessionContext {
     pub permission: ToolsPermission,
 }
 
+
+
+
 impl SessionContext {
     pub fn new(token: u32, total_token: u32) -> Self {
         Self {
