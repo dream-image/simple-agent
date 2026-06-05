@@ -30,6 +30,7 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::{Mutex, MutexGuard};
 use tokio_stream::StreamExt;
 use tools::get_weather::GetWeather;
+use crate::context::workspace::Workspace;
 
 #[derive(Default, serde::Serialize, Clone, Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -442,27 +443,40 @@ async fn agent_init() -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn create_session(session_id: &str) -> Result<SessionContext, String> {
+async fn create_session(session_id: &str,project_dir:&str) -> Result<SessionContext, String> {
+
+    let mut session_context_map = SESSION_CONTEXT_MAP.lock().await;
+
+    let session_context = session_context_map
+        .entry(session_id.to_string())
+        .or_insert(Arc::new(Mutex::new(SessionContext{
+            token: 0,
+            total_token: 100_0000,
+            mode: Default::default(),
+            permission: Default::default(),
+            workspace: Workspace{
+                cwd: project_dir.to_string(),
+                project_root: project_dir.to_string(),
+                read_root:project_dir.to_string(),
+                write_root: project_dir.to_string(),
+            },
+        })))
+        .clone();
+
+    let session_context = session_context.lock().await;
     let mut history_map = HISTORY_MAP.lock().await;
     history_map
         .entry(session_id.to_string())
         .or_insert_with(|| {
             vec![InputMessage {
                 role: Role::System,
-                content: Some(get_system_prompt(None)),
+                content: Some(get_system_prompt(Some(&session_context))),
                 reasoning_content: None,
                 tool_calls: None,
                 tool_call_id: None,
                 session_context: None,
             }]
         });
-    let mut session_context_map = SESSION_CONTEXT_MAP.lock().await;
-    let session_context = session_context_map
-        .entry(session_id.to_string())
-        .or_insert(Arc::new(Mutex::new(SessionContext::new(None,None))))
-        .clone();
-    let session_context = session_context.lock().await;
-
     Ok(session_context.clone())
 }
 
@@ -486,6 +500,8 @@ async fn set_permission_mode(session_id: &str, mode: PermissionMod) -> Result<Se
     session_context.mode = mode;
     Ok(session_context.clone())
 }
+
+
 
 #[tauri::command]
 async fn call(app: AppHandle, session_id: &str, question: &str) -> Result<InputMessage, String> {
@@ -636,7 +652,7 @@ async fn call(app: AppHandle, session_id: &str, question: &str) -> Result<InputM
                                 }
                                 _ => {}
                             }
-                            let result = get_weather.execute(input);
+                            let result = get_weather.execute(input,&session_context);
 
                             tool_result_push(&mut session_context, &mut history, Ok(result), tool)
                                 .await;
@@ -707,7 +723,7 @@ async fn call(app: AppHandle, session_id: &str, question: &str) -> Result<InputM
                                 }
                                 _ => {}
                             }
-                            let result = edit_file.execute(input);
+                            let result = edit_file.execute(input,&session_context);
 
                             tool_result_push(&mut session_context, &mut history, result, tool)
                                 .await;
@@ -778,7 +794,7 @@ async fn call(app: AppHandle, session_id: &str, question: &str) -> Result<InputM
                                 }
                                 _ => {}
                             }
-                            let result = read_file.execute(input);
+                            let result = read_file.execute(input,&session_context);
 
                             tool_result_push(&mut session_context, &mut history, result, tool)
                                 .await;
@@ -848,7 +864,7 @@ async fn call(app: AppHandle, session_id: &str, question: &str) -> Result<InputM
                                 }
                                 _ => {}
                             }
-                            let result = shell.execute(input);
+                            let result = shell.execute(input,&session_context);
 
                             tool_result_push(&mut session_context, &mut history, result, tool)
                                 .await;
@@ -896,13 +912,15 @@ async fn call(app: AppHandle, session_id: &str, question: &str) -> Result<InputM
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             greet,
             agent_init,
             create_session,
             delete_session,
             set_permission_mode,
-            call
+            call,
+
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

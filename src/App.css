@@ -83,44 +83,130 @@ textarea {
   gap: 12px;
 }
 
-.conversation-section {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+.sidebar-collapse.ant-collapse,
+.project-conversation-group.ant-collapse {
+  border: 0;
+  background: transparent;
 }
 
-.conversation-section-title {
-  padding: 0 10px;
+.sidebar-collapse > .ant-collapse-item,
+.project-conversation-group > .ant-collapse-item {
+  border: 0;
+}
+
+.sidebar-collapse > .ant-collapse-item > .ant-collapse-header,
+.project-conversation-group > .ant-collapse-item > .ant-collapse-header {
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 6px 0 10px !important;
+  border-radius: 10px !important;
+  cursor: pointer;
+  line-height: 32px;
+  overflow: hidden;
+  transition: background-color 0.15s ease;
+  user-select: none;
+}
+
+.sidebar-collapse > .ant-collapse-item > .ant-collapse-header {
   color: #9ca3af;
   font-size: 15px;
   font-weight: 650;
-  line-height: 32px;
 }
 
-.project-conversation-group {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.project-title {
+.project-conversation-group > .ant-collapse-item > .ant-collapse-header {
   height: 36px;
   min-height: 36px;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 0 10px;
   color: #525866;
   font-size: 15px;
   font-weight: 500;
 }
 
-.project-title span {
+.sidebar-collapse > .ant-collapse-item > .ant-collapse-header:hover,
+.project-conversation-group > .ant-collapse-item > .ant-collapse-header:hover {
+  background: #f1f5f9 !important;
+}
+
+.sidebar-collapse > .ant-collapse-item > .ant-collapse-header:focus,
+.sidebar-collapse > .ant-collapse-item > .ant-collapse-header:focus-visible,
+.project-conversation-group > .ant-collapse-item > .ant-collapse-header:focus,
+.project-conversation-group > .ant-collapse-item > .ant-collapse-header:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+.sidebar-collapse .ant-collapse-title {
+  min-width: 0;
+}
+
+.sidebar-collapse .ant-collapse-panel,
+.project-conversation-group .ant-collapse-panel {
+  border: 0 !important;
+  background: transparent;
+}
+
+.sidebar-collapse > .ant-collapse-item > .ant-collapse-panel > .ant-collapse-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 0 0 !important;
+}
+
+.project-conversation-group > .ant-collapse-item > .ant-collapse-panel > .ant-collapse-body {
+  padding: 6px 0 0 !important;
+}
+
+.conversation-section-name,
+.project-title-name {
   min-width: 0;
   overflow: hidden;
+  text-align: left;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.project-title-label {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.project-title-label .anticon {
+  flex: 0 0 auto;
+}
+
+.title-add-button {
+  width: 26px;
+  height: 26px;
+  min-width: 26px;
+  margin-left: auto;
+  opacity: 0;
+  padding: 0;
+  pointer-events: none;
+  display: grid !important;
+  place-items: center;
+  color: #8b909a;
+  transition: opacity 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+}
+
+.sidebar-collapse > .ant-collapse-item > .ant-collapse-header:hover .title-add-button,
+.sidebar-collapse > .ant-collapse-item > .ant-collapse-header:focus-within .title-add-button,
+.project-conversation-group > .ant-collapse-item > .ant-collapse-header:hover .title-add-button,
+.project-conversation-group > .ant-collapse-item > .ant-collapse-header:focus-within .title-add-button {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.title-add-button .ant-btn-icon {
+  display: grid;
+  place-items: center;
+}
+
+.title-add-button:hover {
+  color: #3b82f6 !important;
+  background: #edf2ff !important;
 }
 
 .conversation-items {
@@ -197,11 +283,42 @@ textarea {
   color: #172033;
 }
 
-/*
-.assistant-message .streamdown {
+.assistant-message .assistant-markdown {
+  --font-size: 14px;
+  --margin-block: 0 0 12px 0;
+  --margin-ul-ol: 0 0 12px 22px;
+  --margin-li: 4px 0;
+  --table-margin: 12px 0;
   color: #172033;
 }
-*/
+
+.assistant-message .assistant-markdown + .assistant-markdown {
+  margin-top: 8px;
+}
+
+.assistant-message .markdown-code-highlighter,
+.assistant-message .ant-x-mermaid,
+.assistant-message .ant-x-sources {
+  margin: 12px 0;
+}
+
+.assistant-message .markdown-code-highlighter {
+  overflow: hidden;
+  border: 1px solid #dbe4f0;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.markdown-icon {
+  margin: 0 4px;
+  color: #1677ff;
+  vertical-align: -0.125em;
+}
+
+.assistant-message .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
 
 .assistant-message .ant-x-think {
   margin-bottom: 12px;

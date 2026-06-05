@@ -5,6 +5,7 @@ pub mod shell;
 
 use schemars::JsonSchema;
 use serde_json::{Value, json, to_value};
+use crate::context::session_context::SessionContext;
 
 #[derive(Ord, PartialOrd, Eq, PartialEq)]
 pub enum ToolEffect{
@@ -20,7 +21,7 @@ pub trait Tool {
 
     type Input: JsonSchema;
     type Output;
-    fn execute(&self, input: Self::Input) -> Self::Output;
+    fn execute(&self, input: Self::Input,session_context: &SessionContext) -> Self::Output;
     fn effect_type(&self,input: Option<&Self::Input>)->ToolEffect;
     fn definition() -> Value {
         let mut schema = to_value(schemars::schema_for!(Self::Input)).unwrap();

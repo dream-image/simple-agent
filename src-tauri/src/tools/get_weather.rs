@@ -19,7 +19,7 @@ impl Tool for GetWeather {
     type Input = ToolInput;
     type Output = String;
 
-    fn execute(&self, input: Self::Input) -> Self::Output {
+    fn execute(&self, input: Self::Input,session_context: &SessionContext) -> Self::Output {
         println!("工具入参：{:?}", input);
         format!("{} 温度是24度,无风", input.city)
     }

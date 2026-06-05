@@ -31,10 +31,10 @@ impl Tool for EditFile {
     type Input = ToolInput;
     type Output = anyhow::Result<String>;
 
-    fn execute(&self, input: Self::Input) -> Self::Output {
+    fn execute(&self, input: Self::Input,session_context: &SessionContext) -> Self::Output {
         let mut path = PathBuf::from(input.file_path);
         if path.is_relative() {
-            path = get_current_work_path().join(path);
+            path = PathBuf::from(session_context.workspace.cwd.to_string()).join(path);
         }
         let mut content = fs::read_to_string(&path)?;
 

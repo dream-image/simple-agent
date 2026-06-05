@@ -11,10 +11,14 @@ pub struct Shell {}
 #[derive(Serialize, Deserialize, Debug, JsonSchema)]
 #[schemars(title = "")]
 pub struct ToolInput {
-    #[schemars(description = "需要执行的shell名称或者shell命令")]
-    shell: String,
-    #[schemars(description = "shell字段是名称的时候，需要传入具体参数")]
+
+    #[schemars(description = "需要执行的shell命令，如果和shell_name共存，那么以此shell为准")]
+    shell: Option<String>,
+    #[schemars(description = "需要执行的shell命令名称")]
+    shell_name:Option<String>,
+    #[schemars(description = "shell_name对应的命令参数")]
     args: Option<Vec<String>>,
+
 }
 impl Tool for Shell {
     const NAME: &str = "shell";
@@ -22,25 +26,24 @@ impl Tool for Shell {
     type Input = ToolInput;
     type Output = anyhow::Result<String>;
 
-    fn execute(&self, input: Self::Input) -> Self::Output {
-
-            let output = if (input.args.as_ref()).is_some_and(|x| x.len()>0){
-                Command::new(input.shell)
-                    .args(input.args.as_ref().unwrap())
-                    .output()
-                    .map_err(|err| anyhow!(err))
-            }else{
+    fn execute(&self, input: Self::Input,session_context: &SessionContext) -> Self::Output {
+            let output = if let Some(shell) =input.shell {
                 #[cfg(windows)]
                 {
-                    Command::new("cmd").args(["/C",input.shell.as_str()]).output().map_err(|err| anyhow!(err))
+                    Command::new("cmd").current_dir(session_context.workspace.cwd.to_string()).args(["/C",ishell.as_str()]).output().map_err(|err| anyhow!(err))
                 }
                 #[cfg(not(windows))]
                 {
-                    Command::new("sh").args(["-c",input.shell.as_str()]).output().map_err(|err| anyhow!(err))
+                    Command::new("sh").current_dir(session_context.workspace.cwd.to_string()).args(["-c",shell.as_str()]).output().map_err(|err| anyhow!(err))
                 }
+            } else if let Some(shell_name)=input.shell_name {
+                Command::new(shell_name).current_dir(session_context.workspace.cwd.to_string())
+                    .args(input.args.as_ref().unwrap())
+                    .output()
+                    .map_err(|err| anyhow!(err))
+            } else {
+                Err(anyhow!("no shell name provided"))
             };
-
-
             if let Err(err) = output {
                 return Err(err);
             }
