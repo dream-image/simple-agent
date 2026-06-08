@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Listener};
 use tokio::sync::oneshot;
 use tokio::sync::oneshot::channel;
+use crate::{History, SessionStatus};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct RequestPayload {
@@ -25,12 +26,13 @@ pub struct ResponsePayload {
 #[tauri::command]
 pub async fn wait_permission_apply<T: Tool>(
     app: &tauri::AppHandle,
+    history: &mut History,
     session_id:&str,
     tool: &T,
     tool_id: &str,
 ) -> Result<ResponsePayload, String> {
     let (sender, receiver) = channel();
-
+    history.session_status=SessionStatus::Pending;
     println!(
         "[permission] wait session_id={} tool_id={} name={}",
         session_id,
@@ -75,7 +77,9 @@ pub async fn wait_permission_apply<T: Tool>(
                 tool_id,
                 value.result
             );
+            history.session_status=SessionStatus::Connect;
             value
+            
         })
         .map_err(|x| x.to_string())
 }

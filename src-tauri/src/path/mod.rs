@@ -16,7 +16,7 @@ pub fn init_data_dir(app:&AppHandle)->anyhow::Result<()>{
      std::fs::create_dir_all(&dir)?;
      Ok(())
 }
-pub fn write_file(app:&AppHandle,file_path: &str, contents: String)->anyhow::Result<bool>{
+pub fn write_file(app:&AppHandle,file_path: &str, contents: String)->anyhow::Result<()>{
      let dir = app.path().app_data_dir()?;
      let file_path = dir.join(file_path);
 
@@ -26,17 +26,17 @@ pub fn write_file(app:&AppHandle,file_path: &str, contents: String)->anyhow::Res
           create_dir_all(&file_path)?;
           write(&file_path, contents)?;
      };
-     Ok(true)
+     Ok(())
 
 }
-pub fn add_file(app:&AppHandle,file_path: &str, contents: String)->anyhow::Result<bool>{
+pub fn add_file(app:&AppHandle,file_path: &str, contents: String)->anyhow::Result<()>{
      let dir = app.path().app_data_dir()?;
      let file_path = dir.join(file_path);
      let mut file = OpenOptions::new().create(true).append(true).open(&file_path)?;
      writeln!(file, "{}", contents)?;
-     Ok(true)
+     Ok(())
 }
-pub fn delete_file(app:&AppHandle,file_path: &str, contents: String)->anyhow::Result<bool>{
+pub fn delete_file(app:&AppHandle,file_path: &str, contents: String)->anyhow::Result<()>{
      let dir = app.path().app_data_dir()?;
      let file_path = dir.join(file_path);
      if exists(&file_path).is_ok() {
@@ -44,6 +44,6 @@ pub fn delete_file(app:&AppHandle,file_path: &str, contents: String)->anyhow::Re
      }else{
           return Err(anyhow!("文件不存在"));
      }
-     Ok(true)
+     Ok(())
 }
 

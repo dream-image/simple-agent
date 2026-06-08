@@ -12,7 +12,7 @@ import {
 import {invoke} from "@tauri-apps/api/core";
 import {emit, listen} from "@tauri-apps/api/event";
 import {open} from "@tauri-apps/plugin-dialog";
-import {Button, Collapse, ConfigProvider, Dropdown, Empty, Modal, Popover} from "antd";
+import {Button, Collapse, ConfigProvider, Dropdown, Empty, Modal, Popover, message as antdMessage} from "antd";
 import type {MenuProps} from "antd";
 import {
     DownOutlined,
@@ -38,8 +38,11 @@ import Latex from "@ant-design/x-markdown/plugins/Latex";
 import "./App.css";
 import type {ComponentProps as XMarkdownComponentProps, XMarkdownProps} from "@ant-design/x-markdown";
 
+type ApiRole = "user" | "system" | "assistant" | "tool" | "userStop";
+
 type AgentReply = {
-    content: string;
+    role?: ApiRole;
+    content?: string | null;
     reasoning_content?: string | null;
     session_context?: SessionContext | null;
 };
@@ -1149,12 +1152,43 @@ function App() {
                 question,
             });
             const sessionContext = reply.session_context ?? null;
+            const replyContent = reply.content ?? "";
+            const replyReasoningContent = reply.reasoning_content ?? undefined;
+
+            if (reply.role === "userStop") {
+                setSessions((current) =>
+                    current.map((session) =>
+                        session.key === sessionId
+                            ? {
+                                ...session,
+                                messages: session.messages.flatMap((message) => {
+                                    if (message.id !== assistantMessage.id) {
+                                        return [message];
+                                    }
+
+                                    const hasVisibleContent = Boolean(
+                                        message.content ||
+                                        message.reasoningContent ||
+                                        message.parts?.length ||
+                                        message.toolCalls?.length,
+                                    );
+
+                                    return hasVisibleContent
+                                        ? [{...message, loading: false, streaming: false}]
+                                        : [];
+                                }),
+                            }
+                            : session,
+                    ),
+                );
+                return;
+            }
 
             updateMessage(sessionId, assistantMessage.id, (message) => ({
                 ...message,
-                content: message.content || reply.content,
-                reasoningContent: message.reasoningContent || reply.reasoning_content || undefined,
-                parts: message.parts ?? (reply.content ? appendTextPart(message, reply.content) : undefined),
+                content: message.content || replyContent,
+                reasoningContent: message.reasoningContent || replyReasoningContent,
+                parts: message.parts ?? (replyContent ? appendTextPart(message, replyContent) : undefined),
                 loading: false,
                 streaming: false,
             }));
@@ -1172,9 +1206,12 @@ function App() {
                 );
             }
         } catch (error) {
+            const errorMessage = getErrorMessage(error);
+            console.error("agent call error", error);
+            antdMessage.error(errorMessage);
             updateMessage(sessionId, assistantMessage.id, (message) => ({
                 ...message,
-                content: getErrorMessage(error),
+                content: errorMessage,
                 loading: false,
                 streaming: false,
                 error: true,
@@ -1183,6 +1220,20 @@ function App() {
             cleanupPermissionListeners(sessionId);
             delete streamTargetRef.current[sessionId];
             setLoadingSession((current) => (current === sessionId ? null : current));
+        }
+    };
+
+    const handleCancel = async () => {
+        const sessionId = loadingSession;
+
+        if (!sessionId) {
+            return;
+        }
+
+        try {
+            await invoke("call_cancel", {sessionId});
+        } catch (error) {
+            antdMessage.error(getErrorMessage(error));
         }
     };
 
@@ -1420,10 +1471,11 @@ function App() {
                             <Sender
                                 value={input}
                                 loading={loadingSession === activeKey}
-                                disabled={!ready || Boolean(loadingSession)}
+                                disabled={!ready || (Boolean(loadingSession) && loadingSession !== activeKey)}
                                 placeholder={ready ? "输入消息" : "初始化中"}
                                 submitType="enter"
                                 onChange={setInput}
+                                onCancel={handleCancel}
                                 onSubmit={handleSubmit}
                                 footer={
                                     <div className="sender-footer">
