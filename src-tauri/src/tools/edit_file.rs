@@ -6,7 +6,7 @@ use std::io::{ Write};
 use std::path::PathBuf;
 use tauri::window::Effect;
 use crate::context::session_context::SessionContext;
-use crate::path::get_current_work_path;
+
 use crate::permission::{Permission, PermissionLevel};
 
 pub struct EditFile {}

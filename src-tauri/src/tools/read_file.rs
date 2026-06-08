@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{ PathBuf};
 use crate::context::session_context::SessionContext;
-use crate::path::get_current_work_path;
+
 use crate::permission::{Permission, PermissionLevel};
 
 pub struct ReadFile {}

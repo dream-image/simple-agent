@@ -31,6 +31,7 @@ use tokio::sync::{Mutex, MutexGuard};
 use tokio_stream::StreamExt;
 use tools::get_weather::GetWeather;
 use crate::context::workspace::Workspace;
+use crate::path::init_data_dir;
 
 #[derive(Default, serde::Serialize, Clone, Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -910,9 +911,17 @@ async fn call(app: AppHandle, session_id: &str, question: &str) -> Result<InputM
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+   let app =  tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+       .setup(|app| {
+           let app_handle = app.handle().clone();
+           let res = init_data_dir(&app_handle);
+           if res.is_err() {
+               println!("初始化数据仓库失败：{:?}", res);
+           }
+           Ok(())
+       })
         .invoke_handler(tauri::generate_handler![
             greet,
             agent_init,
@@ -924,4 +933,5 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+
 }
