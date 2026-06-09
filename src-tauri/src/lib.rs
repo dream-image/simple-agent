@@ -5,7 +5,7 @@ mod permission;
 mod prompt;
 pub mod tools;
 
-use crate::context::session_context::{SessionContext, SESSION_CONTEXT_MAP};
+use crate::context::session_context::{SessionContext, SessionStatus, SessionStatusState, SESSION_CONTEXT_MAP};
 use crate::context::workspace::Workspace;
 use crate::event::{wait_permission_apply, PermissionResult};
 use crate::path::{init_data_dir, write_file};
@@ -26,14 +26,15 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, to_value};
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
-use tokio::sync::{Mutex, MutexGuard};
+use tokio::sync::{watch, Mutex, MutexGuard};
 use tokio_stream::StreamExt;
 use tools::get_weather::GetWeather;
 
-#[derive(Default, serde::Serialize, Clone, Debug, Deserialize,Ord, PartialOrd, PartialEq,Eq)]
+#[derive(Default, serde::Serialize, Clone, Debug, Deserialize, Ord, PartialOrd, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 enum Role {
     #[default]
@@ -288,8 +289,12 @@ async fn agent_call_stream(
     session_id: &str,
     history: &[InputMessage],
 ) -> anyhow::Result<AiResponse> {
-    let filter_role = vec![Role::Tool, Role::User, Role::System,Role::Assistant];
-    let chat_message: Vec<ChatMessage> = history.iter().map(ChatMessage::from).filter(|x| filter_role.contains(&x.role)).collect();
+    let filter_role = vec![Role::Tool, Role::User, Role::System, Role::Assistant];
+    let chat_message: Vec<ChatMessage> = history
+        .iter()
+        .map(ChatMessage::from)
+        .filter(|x| filter_role.contains(&x.role))
+        .collect();
     let body_json = json!({
          "model": "deepseek-v4-pro",
          "messages": chat_message,
@@ -426,18 +431,10 @@ enum ToolsEnum {
     ReadFile(ReadFile),
     Shell(Shell),
 }
-#[derive(serde::Serialize, Clone, Debug, Deserialize, Default, Ord, PartialOrd, PartialEq, Eq)]
-pub enum SessionStatus {
-    #[default]
-    Default,
-    Pending,
-    Connect,
-    Stop,
-}
+
 #[derive(serde::Serialize, Clone, Debug, Deserialize, Default)]
 pub struct History {
     history: Vec<InputMessage>,
-    session_status: SessionStatus,
 }
 
 static TOOLS_MAP: LazyLock<Mutex<HashMap<String, ToolsEnum>>> =
@@ -460,40 +457,43 @@ async fn agent_init() -> Result<(), String> {
 
 #[tauri::command]
 async fn create_session(session_id: &str, project_dir: &str) -> Result<SessionContext, String> {
-    let mut session_context_map = SESSION_CONTEXT_MAP.lock().await;
+    let session_context_value =SessionContext {
+        token: 0,
+        total_token: 100_0000,
+        mode: Default::default(),
+        permission: Default::default(),
+        workspace: Workspace {
+            cwd: project_dir.to_string(),
+            project_root: project_dir.to_string(),
+            read_root: project_dir.to_string(),
+            write_root: project_dir.to_string(),
+        },
+        session_status: Default::default(),
+    };
 
-    let session_context = session_context_map
-        .entry(session_id.to_string())
-        .or_insert(Arc::new(Mutex::new(SessionContext {
-            token: 0,
-            total_token: 100_0000,
-            mode: Default::default(),
-            permission: Default::default(),
-            workspace: Workspace {
-                cwd: project_dir.to_string(),
-                project_root: project_dir.to_string(),
-                read_root: project_dir.to_string(),
-                write_root: project_dir.to_string(),
-            },
-        })))
-        .clone();
-
-    let session_context = session_context.lock().await;
     let mut history_map = HISTORY_MAP.lock().await;
     history_map
         .entry(session_id.to_string())
-        .or_insert_with(|| Arc::new(Mutex::new( History {
-            history: vec![InputMessage {
-                role: Role::System,
-                content: Some(get_system_prompt(Some(&session_context))),
-                reasoning_content: None,
-                tool_calls: None,
-                tool_call_id: None,
-                session_context: None,
-            }],
-            session_status: SessionStatus::Default,
-        })));
-    Ok(session_context.clone())
+        .or_insert_with(|| {
+            Arc::new(Mutex::new(History {
+                history: vec![InputMessage {
+                    role: Role::System,
+                    content: Some(get_system_prompt(Some(&session_context_value))),
+                    reasoning_content: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    session_context: None,
+                }],
+            }))
+        });
+    let mut session_context_map = SESSION_CONTEXT_MAP.lock().await;
+    let session_context=Arc::new(Mutex::new(session_context_value.clone()));
+    let _ = session_context_map
+        .entry(session_id.to_string())
+        .or_insert(session_context)
+        .clone();
+
+    Ok(session_context_value)
 }
 
 #[tauri::command]
@@ -521,34 +521,76 @@ async fn set_permission_mode(
 }
 
 #[tauri::command]
-async fn call_cancel(app: AppHandle, session_id: &str) -> Result<(), String> {
+async fn call_cancel(session_id: &str) -> Result<(), String> {
     println!("========================");
     println!("call cancel被调用了");
+    let session_context_map = SESSION_CONTEXT_MAP.lock().await;
+    let session_context = session_context_map.get(&session_id.to_string());
 
-    let mut history_map = HISTORY_MAP.lock().await;
-    let history = history_map.get_mut(session_id);
+    if let Some(session) = session_context {
+        let session = session.lock().await;
+        session.session_status.set(SessionStatus::Stop);
 
-    if let Some(history) = history {
-        let mut history = history.lock().await;
-        history.session_status=SessionStatus::Stop;
-        println!("history:{:?}", history.clone());
-        println!("========================");
+        println!(
+            "session_status stop信号发布成功\
+        ========================"
+        );
         Ok(())
-    }else{
+    } else {
         println!("========================");
         Err(format!("No history for session {}", session_id))
     }
-
 }
 
+enum WaitResult {
+    Stop(anyhow::Result<()>),
+    Continue(anyhow::Result<AiResponse>),
+}
+async fn wait_stop_or_agent(
+    session_context: &mut SessionContext,
+    app: &AppHandle,
+    session_id: &str,
+    history: &[InputMessage],
+) -> WaitResult {
+    if session_context.session_status.is_stop() {
+        return WaitResult::Stop(Ok(()));
+    }
+    let mut status_rx=session_context.session_status.subscribe();
+    let stream = agent_call_stream(app, session_id, history);
+    tokio::pin!(stream);
+    loop{
+        tokio::select! {
+        changed = status_rx.changed() => {
+            match changed {
+                 Err(err)=>{
+                     return  WaitResult::Stop( Err(anyhow!(err.to_string())))
+                }
+                Ok(v) =>{
+                    if *status_rx.borrow()== SessionStatus::Stop{
+                         return  WaitResult::Stop(Ok(()))
+                    }
+
+                }
+            }
+        }
+        stream = &mut stream => {
+           return WaitResult::Continue(stream)
+        }
+    }
+    }
+
+}
 #[tauri::command]
 async fn call(app: AppHandle, session_id: &str, question: &str) -> Result<InputMessage, String> {
-
     let mut history = {
         let mut history_map = HISTORY_MAP.lock().await;
         let mut history = history_map
             .get_mut(session_id)
-            .ok_or_else(|| "session不存在".to_string())?.lock().await.clone();
+            .ok_or_else(|| "session不存在".to_string())?
+            .lock()
+            .await
+            .clone();
+
         history.history.push(InputMessage {
             role: Role::User,
             content: Some(question.trim_end().to_string()),
@@ -560,12 +602,12 @@ async fn call(app: AppHandle, session_id: &str, question: &str) -> Result<InputM
 
         history
     };
-    let session_context={
+    {
         let mut session_context_map = SESSION_CONTEXT_MAP.lock().await;
-         session_context_map
+        let _ =session_context_map
             .entry(session_id.to_string())
-            .or_insert(Arc::new(Mutex::new(SessionContext::new(None, None))))
-            .clone()
+            .or_insert(Arc::new(Mutex::new(SessionContext::new(None, None))));
+
     };
 
     let tool_result_push = async |session_context: &SessionContext,
@@ -597,464 +639,516 @@ async fn call(app: AppHandle, session_id: &str, question: &str) -> Result<InputM
             },
         );
     };
-    history.session_status = SessionStatus::Connect;
+    let mut session_context = {
+        let mut session_context_map = SESSION_CONTEXT_MAP.lock().await;
+        let session_context=session_context_map
+            .entry(session_id.to_string())
+            .or_insert(Arc::new(Mutex::new(SessionContext::new(None, None))))
+            .clone();
+        let session_context = session_context.lock().await;
+        session_context.session_status.set(SessionStatus::Connect);
+        session_context.clone()
+    };
     loop {
 
-        println!("latest:\
-        status:{:?}\
-        history:{:?}",history.session_status,history.history.last());
-        if history.session_status == SessionStatus::Stop {
-            println!("========================================================================");
-            println!("用户手动结束");
-            println!("========================================================================");
-            let mut session_context = session_context.lock().await;
-            let message = InputMessage {
-                role: Role::UserStop,
-                content: Some("用户手动结束".to_string()),
-                reasoning_content: None,
-                tool_calls: None,
-                tool_call_id: None,
-                session_context: Some(session_context.clone()),
-            };
-            history.history.push(message.clone());
-            let mut history_map = HISTORY_MAP.lock().await;
-            history_map.insert(session_id.to_string(), Arc::new(Mutex::new(history.clone())));
-            let write_result = write_file(
+        let wait_result ={
+            wait_stop_or_agent(
+                &mut session_context,
                 &app,
-                format!("{}.jsonl", session_id.to_string()).as_str(),
-                serde_json::to_string_pretty(&history.clone()).unwrap(),
-            );
-            if let Err(err) = write_result {
-                println!("会话记录永久性存储失败：{}", err)
-            }
-            history.session_status = SessionStatus::Default;
-            return Ok(message.clone());
-        }
-        let res = agent_call_stream(&app, session_id, &history.history)
-            .await
-            .map_err(|err| err.to_string())?;
-        {
-            let mut session_context = session_context.lock().await;
-            session_context.add_token(res.usage.total_tokens);
-            println!(
-                "token:{}/{}",
-                session_context.token,
-                session_context.total_token.to_formatted_string(&Locale::en)
-            );
-        }
-        let first_content_message = &res
-            .choices
-            .first()
-            .ok_or_else(|| "响应为空".to_string())?
-            .message;
-        if let Some(tool_calls) = &first_content_message.tool_calls {
-            let mut session_context_snapshot ={
-                session_context.lock().await.clone()
-            };
-            history.history.push(InputMessage {
-                role: Role::Assistant,
-                content: first_content_message.content.clone(),
-                reasoning_content: first_content_message.reasoning_content.clone(),
-                tool_calls: Some(tool_calls.clone()),
-                tool_call_id: None,
-                session_context: Some(session_context_snapshot.clone()),
-            });
-            let tools_map = TOOLS_MAP.lock().await;
-            for tool in tool_calls {
-                let name = tool.function.name.as_str();
-                let tool_id = tool.id.as_str();
-                let tool_pre_permission = session_context_snapshot.permission.check_permissions(name);
-                match (name, tools_map.get(name)) {
-                    ("get_weather", Some(ToolsEnum::GetWeather(get_weather))) => {
-                        let input =
-                            serde_json::from_str::<GetWeatherInput>(&tool.function.arguments)
-                                .map_err(|err| anyhow!(err));
-                        if let Ok(input) = input {
-                            let tool_permission =
-                                get_weather.check_permission(&input, &session_context_snapshot);
-                            let final_permission = check_final_permission(
-                                &tool_pre_permission,
-                                &tool_permission,
-                                &session_context_snapshot.mode,
-                                get_weather,
-                            );
-                            match final_permission.0 {
-                                PermissionLevel::Deny => {
-                                    tool_result_push(
-                                        &session_context_snapshot,
-                                        &mut history.history,
-                                        Err(anyhow!(final_permission.1)),
-                                        tool,
-                                    )
-                                    .await;
-                                    continue;
-                                }
-                                PermissionLevel::Ask => {
-                                    let result = wait_permission_apply(
-                                        &app,
-                                        &mut history,
-                                        session_id,
-                                        get_weather,
-                                        tool_id,
-                                    )
-                                    .await;
-                                    match result {
-                                        Ok(value) => match value.result {
-                                            PermissionResult::AlwaysAllow => {
-                                                let mut session_context = session_context.lock().await;
-                                                session_context.permission.ask_tools.remove(name);
-                                                session_context
-                                                    .permission
-                                                    .allow_tools
-                                                    .insert(name.to_string());
-                                            }
-                                            PermissionResult::Deny => {
-                                                tool_result_push(
-                                                    &session_context_snapshot,
-                                                    &mut history.history,
-                                                    Err(anyhow!(value.reason)),
-                                                    tool,
-                                                )
-                                                .await;
-                                                continue;
-                                            }
-                                            _ => {}
-                                        },
-                                        Err(err) => {
-                                            tool_result_push(
-                                                &session_context_snapshot,
-                                                &mut history.history,
-                                                Err(anyhow!(err)),
-                                                tool,
-                                            )
-                                            .await;
-                                            continue;
-                                        }
-                                    }
-                                }
-                                _ => {}
-                            }
-                            let result = get_weather.execute(input, &session_context_snapshot);
-
-                            tool_result_push(
-                                &session_context_snapshot,
-                                &mut history.history,
-                                Ok(result),
-                                tool,
-                            )
-                            .await;
-                        } else if let Err(err) = input {
-                            tool_result_push(
-                                &session_context_snapshot,
-                                &mut history.history,
-                                Err(err),
-                                tool,
-                            )
-                            .await;
-                        }
-                    }
-                    ("edit_file", Some(ToolsEnum::EditFile(edit_file))) => {
-                        let input = serde_json::from_str::<EditFileInput>(&tool.function.arguments)
-                            .map_err(|err| anyhow!(err));
-                        if let Ok(input) = input {
-                            let tool_permission =
-                                edit_file.check_permission(&input, &session_context_snapshot);
-                            let final_permission = check_final_permission(
-                                &tool_pre_permission,
-                                &tool_permission,
-                                &session_context_snapshot.mode,
-                                edit_file,
-                            );
-                            match final_permission.0 {
-                                PermissionLevel::Deny => {
-                                    tool_result_push(
-                                        &session_context_snapshot,
-                                        &mut history.history,
-                                        Err(anyhow!(final_permission.1)),
-                                        tool,
-                                    )
-                                    .await;
-                                    continue;
-                                }
-                                PermissionLevel::Ask => {
-                                    let result = wait_permission_apply(
-                                        &app,
-                                        &mut history,
-                                        session_id,
-                                        edit_file,
-                                        tool_id,
-                                    )
-                                    .await;
-                                    match result {
-                                        Ok(value) => match value.result {
-                                            PermissionResult::AlwaysAllow => {
-                                                let mut session_context= session_context.lock().await;
-                                                session_context.permission.ask_tools.remove(name);
-                                                session_context
-                                                    .permission
-                                                    .allow_tools
-                                                    .insert(name.to_string());
-                                            }
-                                            PermissionResult::Deny => {
-                                                tool_result_push(
-                                                    &session_context_snapshot,
-                                                    &mut history.history,
-                                                    Err(anyhow!(value.reason)),
-                                                    tool,
-                                                )
-                                                .await;
-                                                continue;
-                                            }
-                                            _ => {}
-                                        },
-                                        Err(err) => {
-                                            tool_result_push(
-                                                &session_context_snapshot,
-                                                &mut history.history,
-                                                Err(anyhow!(err)),
-                                                tool,
-                                            )
-                                            .await;
-                                            continue;
-                                        }
-                                    }
-                                }
-                                _ => {}
-                            }
-                            let result = edit_file.execute(input, &session_context_snapshot);
-
-                            tool_result_push(
-                                &session_context_snapshot,
-                                &mut history.history,
-                                result,
-                                tool,
-                            )
-                            .await;
-                        } else if let Err(err) = input {
-                            tool_result_push(
-                                &session_context_snapshot,
-                                &mut history.history,
-                                Err(err),
-                                tool,
-                            )
-                            .await;
-                        }
-                    }
-                    ("read_file", Some(ToolsEnum::ReadFile(read_file))) => {
-                        let input = serde_json::from_str::<ReadFileInput>(&tool.function.arguments)
-                            .map_err(|err| anyhow!(err));
-                        if let Ok(input) = input {
-                            let tool_permission =
-                                read_file.check_permission(&input, &session_context_snapshot);
-                            let final_permission = check_final_permission(
-                                &tool_pre_permission,
-                                &tool_permission,
-                                &session_context_snapshot.mode,
-                                read_file,
-                            );
-                            match final_permission.0 {
-                                PermissionLevel::Deny => {
-                                    tool_result_push(
-                                        &session_context_snapshot,
-                                        &mut history.history,
-                                        Err(anyhow!(final_permission.1)),
-                                        tool,
-                                    )
-                                    .await;
-                                    continue;
-                                }
-                                PermissionLevel::Ask => {
-                                    let result = wait_permission_apply(
-                                        &app,
-                                        &mut history,
-                                        session_id,
-                                        read_file,
-                                        tool_id,
-                                    )
-                                    .await;
-                                    match result {
-                                        Ok(value) => match value.result {
-                                            PermissionResult::AlwaysAllow => {
-                                                let mut session_context = session_context.lock().await;
-                                                session_context.permission.ask_tools.remove(name);
-                                                session_context
-                                                    .permission
-                                                    .allow_tools
-                                                    .insert(name.to_string());
-                                            }
-                                            PermissionResult::Deny => {
-                                                tool_result_push(
-                                                    &session_context_snapshot,
-                                                    &mut history.history,
-                                                    Err(anyhow!(value.reason)),
-                                                    tool,
-                                                )
-                                                .await;
-                                                continue;
-                                            }
-                                            _ => {}
-                                        },
-                                        Err(err) => {
-                                            tool_result_push(
-                                                &session_context_snapshot,
-                                                &mut history.history,
-                                                Err(anyhow!(err)),
-                                                tool,
-                                            )
-                                            .await;
-                                            continue;
-                                        }
-                                    }
-                                }
-                                _ => {}
-                            }
-                            let result = read_file.execute(input, &session_context_snapshot);
-
-                            tool_result_push(
-                                &session_context_snapshot,
-                                &mut history.history,
-                                result,
-                                tool,
-                            )
-                            .await;
-                        } else if let Err(err) = input {
-                            tool_result_push(
-                                &session_context_snapshot,
-                                &mut history.history,
-                                Err(err),
-                                tool,
-                            )
-                            .await;
-                        }
-                    }
-                    ("shell", Some(ToolsEnum::Shell(shell))) => {
-                        let input = serde_json::from_str::<ShellInput>(&tool.function.arguments)
-                            .map_err(|err| anyhow!(err));
-                        if let Ok(input) = input {
-                            let tool_permission = shell.check_permission(&input, &session_context_snapshot);
-                            let final_permission = check_final_permission(
-                                &tool_pre_permission,
-                                &tool_permission,
-                                &session_context_snapshot.mode,
-                                shell,
-                            );
-                            match final_permission.0 {
-                                PermissionLevel::Deny => {
-                                    tool_result_push(
-                                        &session_context_snapshot,
-                                        &mut history.history,
-                                        Err(anyhow!(final_permission.1)),
-                                        tool,
-                                    )
-                                    .await;
-                                    continue;
-                                }
-                                PermissionLevel::Ask => {
-                                    let result = wait_permission_apply(
-                                        &app,
-                                        &mut history,
-                                        session_id,
-                                        shell,
-                                        tool_id,
-                                    )
-                                    .await;
-                                    match result {
-                                        Ok(value) => match value.result {
-                                            PermissionResult::AlwaysAllow => {
-                                                let mut session_context = session_context.lock().await;
-                                                session_context.permission.ask_tools.remove(name);
-                                                session_context
-                                                    .permission
-                                                    .allow_tools
-                                                    .insert(name.to_string());
-                                            }
-                                            PermissionResult::Deny => {
-                                                tool_result_push(
-                                                    &session_context_snapshot,
-                                                    &mut history.history,
-                                                    Err(anyhow!(value.reason)),
-                                                    tool,
-                                                )
-                                                .await;
-                                                continue;
-                                            }
-                                            _ => {}
-                                        },
-                                        Err(err) => {
-                                            tool_result_push(
-                                                &session_context_snapshot,
-                                                &mut history.history,
-                                                Err(anyhow!(err)),
-                                                tool,
-                                            )
-                                            .await;
-                                            continue;
-                                        }
-                                    }
-                                }
-                                _ => {}
-                            }
-                            let result = shell.execute(input, &session_context_snapshot);
-
-                            tool_result_push(
-                                &session_context_snapshot,
-                                &mut history.history,
-                                result,
-                                tool,
-                            )
-                            .await;
-                        } else if let Err(err) = input {
-                            tool_result_push(
-                                &session_context_snapshot,
-                                &mut history.history,
-                                Err(err),
-                                tool,
-                            )
-                            .await;
-                        }
-                    }
-                    _ => {
-                        tool_result_push(
-                            &session_context_snapshot,
-                            &mut history.history,
-                            anyhow::Ok(format!("该{}工具未实现", &tool.function.name)),
-                            tool,
-                        )
-                        .await;
-                        println!("工具：{}，还没有实现", tool.function.name);
-                    }
+                session_id,
+                &history.history,
+            ).await
+        };
+        // let mut session_context = session_context.clone();
+        return match wait_result {
+            WaitResult::Continue(result) => {
+                let res = result
+                    .map_err(|err| err.to_string())?;
+                {
+                    session_context.add_token(res.usage.total_tokens);
+                    println!(
+                        "token:{}/{}",
+                        &session_context.token,
+                        &session_context.total_token.to_formatted_string(&Locale::en)
+                    );
                 }
-            }
-            continue;
-        } else if let Some(response) = &first_content_message.content {
-            println!("========================================================================");
-            println!("{}", response);
-            println!("========================================================================");
-            let mut session_context = session_context.lock().await;
-            let message = InputMessage {
-                role: Role::Assistant,
-                content: Some(response.clone()),
-                reasoning_content: first_content_message.reasoning_content.clone(),
-                tool_calls: None,
-                tool_call_id: None,
-                session_context: Some(session_context.clone()),
-            };
-            history.history.push(message.clone());
-            let mut history_map = HISTORY_MAP.lock().await;
-            history_map.insert(session_id.to_string(), Arc::new(Mutex::new(history.clone())));
-            let write_result = write_file(
-                &app,
-                format!("{}.jsonl", session_id.to_string()).as_str(),
-                serde_json::to_string_pretty(&history.clone()).unwrap(),
-            );
-            if let Err(err) = write_result {
-                println!("会话记录永久性存储失败：{}", err)
-            }
-            history.session_status = SessionStatus::Default;
-            return Ok(message.clone());
-        }
+                let first_content_message = &res
+                    .choices
+                    .first()
+                    .ok_or_else(|| "响应为空".to_string())?
+                    .message;
+                if let Some(tool_calls) = &first_content_message.tool_calls {
 
-        return Err("响应为空".to_string());
+                    history.history.push(InputMessage {
+                        role: Role::Assistant,
+                        content: first_content_message.content.clone(),
+                        reasoning_content: first_content_message.reasoning_content.clone(),
+                        tool_calls: Some(tool_calls.clone()),
+                        tool_call_id: None,
+                        session_context: Some(session_context.clone()),
+                    });
+                    let tools_map = TOOLS_MAP.lock().await;
+                    for tool in tool_calls {
+                        let name = tool.function.name.as_str();
+                        let tool_id = tool.id.as_str();
+                        let tool_pre_permission =
+                            session_context.permission.check_permissions(name);
+                        match (name, tools_map.get(name)) {
+                            ("get_weather", Some(ToolsEnum::GetWeather(get_weather))) => {
+                                let input = serde_json::from_str::<GetWeatherInput>(
+                                    &tool.function.arguments,
+                                )
+                                .map_err(|err| anyhow!(err));
+                                if let Ok(input) = input {
+                                    let tool_permission = get_weather
+                                        .check_permission(&input, &session_context);
+                                    let final_permission = check_final_permission(
+                                        &tool_pre_permission,
+                                        &tool_permission,
+                                        &session_context.mode,
+                                        get_weather,
+                                    );
+                                    match final_permission.0 {
+                                        PermissionLevel::Deny => {
+                                            tool_result_push(
+                                                &session_context,
+                                                &mut history.history,
+                                                Err(anyhow!(final_permission.1)),
+                                                tool,
+                                            )
+                                            .await;
+                                            continue;
+                                        }
+                                        PermissionLevel::Ask => {
+                                            let result = wait_permission_apply(
+                                                &app,
+                                                &session_context,
+                                                session_id,
+                                                get_weather,
+                                                tool_id,
+                                            )
+                                            .await;
+                                            match result {
+                                                Ok(value) => match value.result {
+                                                    PermissionResult::AlwaysAllow => {
+
+                                                        session_context
+                                                            .permission
+                                                            .ask_tools
+                                                            .remove(name);
+                                                        session_context
+                                                            .permission
+                                                            .allow_tools
+                                                            .insert(name.to_string());
+                                                    }
+                                                    PermissionResult::Deny => {
+                                                        tool_result_push(
+                                                            &session_context,
+                                                            &mut history.history,
+                                                            Err(anyhow!(value.reason)),
+                                                            tool,
+                                                        )
+                                                        .await;
+                                                        continue;
+                                                    }
+                                                    _ => {}
+                                                },
+                                                Err(err) => {
+                                                    tool_result_push(
+                                                        &session_context,
+                                                        &mut history.history,
+                                                        Err(anyhow!(err)),
+                                                        tool,
+                                                    )
+                                                    .await;
+                                                    continue;
+                                                }
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                    let result =
+                                        get_weather.execute(input, &session_context);
+
+                                    tool_result_push(
+                                        &session_context,
+                                        &mut history.history,
+                                        Ok(result),
+                                        tool,
+                                    )
+                                    .await;
+                                } else if let Err(err) = input {
+                                    tool_result_push(
+                                        &session_context,
+                                        &mut history.history,
+                                        Err(err),
+                                        tool,
+                                    )
+                                    .await;
+                                }
+                            }
+                            ("edit_file", Some(ToolsEnum::EditFile(edit_file))) => {
+                                let input =
+                                    serde_json::from_str::<EditFileInput>(&tool.function.arguments)
+                                        .map_err(|err| anyhow!(err));
+                                if let Ok(input) = input {
+                                    let tool_permission = edit_file
+                                        .check_permission(&input, &session_context);
+                                    let final_permission = check_final_permission(
+                                        &tool_pre_permission,
+                                        &tool_permission,
+                                        &session_context.mode,
+                                        edit_file,
+                                    );
+                                    match final_permission.0 {
+                                        PermissionLevel::Deny => {
+                                            tool_result_push(
+                                                &session_context,
+                                                &mut history.history,
+                                                Err(anyhow!(final_permission.1)),
+                                                tool,
+                                            )
+                                            .await;
+                                            continue;
+                                        }
+                                        PermissionLevel::Ask => {
+                                            let result = wait_permission_apply(
+                                                &app,
+                                                &session_context,
+                                                session_id,
+                                                edit_file,
+                                                tool_id,
+                                            )
+                                            .await;
+                                            match result {
+                                                Ok(value) => match value.result {
+                                                    PermissionResult::AlwaysAllow => {
+                                                        session_context
+                                                            .permission
+                                                            .ask_tools
+                                                            .remove(name);
+                                                        session_context
+                                                            .permission
+                                                            .allow_tools
+                                                            .insert(name.to_string());
+                                                    }
+                                                    PermissionResult::Deny => {
+                                                        tool_result_push(
+                                                            &session_context,
+                                                            &mut history.history,
+                                                            Err(anyhow!(value.reason)),
+                                                            tool,
+                                                        )
+                                                        .await;
+                                                        continue;
+                                                    }
+                                                    _ => {}
+                                                },
+                                                Err(err) => {
+                                                    tool_result_push(
+                                                        &session_context,
+                                                        &mut history.history,
+                                                        Err(anyhow!(err)),
+                                                        tool,
+                                                    )
+                                                    .await;
+                                                    continue;
+                                                }
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                    let result =
+                                        edit_file.execute(input, &session_context);
+
+                                    tool_result_push(
+                                        &session_context,
+                                        &mut history.history,
+                                        result,
+                                        tool,
+                                    )
+                                    .await;
+                                } else if let Err(err) = input {
+                                    tool_result_push(
+                                        &session_context,
+                                        &mut history.history,
+                                        Err(err),
+                                        tool,
+                                    )
+                                    .await;
+                                }
+                            }
+                            ("read_file", Some(ToolsEnum::ReadFile(read_file))) => {
+                                let input =
+                                    serde_json::from_str::<ReadFileInput>(&tool.function.arguments)
+                                        .map_err(|err| anyhow!(err));
+                                if let Ok(input) = input {
+                                    let tool_permission = read_file
+                                        .check_permission(&input, &session_context);
+                                    let final_permission = check_final_permission(
+                                        &tool_pre_permission,
+                                        &tool_permission,
+                                        &session_context.mode,
+                                        read_file,
+                                    );
+                                    match final_permission.0 {
+                                        PermissionLevel::Deny => {
+                                            tool_result_push(
+                                                &session_context,
+                                                &mut history.history,
+                                                Err(anyhow!(final_permission.1)),
+                                                tool,
+                                            )
+                                            .await;
+                                            continue;
+                                        }
+                                        PermissionLevel::Ask => {
+                                            let result = wait_permission_apply(
+                                                &app,
+                                                &mut session_context,
+                                                session_id,
+                                                read_file,
+                                                tool_id,
+                                            )
+                                            .await;
+                                            match result {
+                                                Ok(value) => match value.result {
+                                                    PermissionResult::AlwaysAllow => {
+
+                                                        session_context
+                                                            .permission
+                                                            .ask_tools
+                                                            .remove(name);
+                                                        session_context
+                                                            .permission
+                                                            .allow_tools
+                                                            .insert(name.to_string());
+                                                    }
+                                                    PermissionResult::Deny => {
+                                                        tool_result_push(
+                                                            &session_context,
+                                                            &mut history.history,
+                                                            Err(anyhow!(value.reason)),
+                                                            tool,
+                                                        )
+                                                        .await;
+                                                        continue;
+                                                    }
+                                                    _ => {}
+                                                },
+                                                Err(err) => {
+                                                    tool_result_push(
+                                                        &session_context,
+                                                        &mut history.history,
+                                                        Err(anyhow!(err)),
+                                                        tool,
+                                                    )
+                                                    .await;
+                                                    continue;
+                                                }
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                    let result =
+                                        read_file.execute(input, &session_context);
+
+                                    tool_result_push(
+                                        &session_context,
+                                        &mut history.history,
+                                        result,
+                                        tool,
+                                    )
+                                    .await;
+                                } else if let Err(err) = input {
+                                    tool_result_push(
+                                        &session_context,
+                                        &mut history.history,
+                                        Err(err),
+                                        tool,
+                                    )
+                                    .await;
+                                }
+                            }
+                            ("shell", Some(ToolsEnum::Shell(shell))) => {
+                                let input =
+                                    serde_json::from_str::<ShellInput>(&tool.function.arguments)
+                                        .map_err(|err| anyhow!(err));
+                                if let Ok(input) = input {
+                                    let tool_permission =
+                                        shell.check_permission(&input, &session_context);
+                                    let final_permission = check_final_permission(
+                                        &tool_pre_permission,
+                                        &tool_permission,
+                                        &session_context.mode,
+                                        shell,
+                                    );
+                                    match final_permission.0 {
+                                        PermissionLevel::Deny => {
+                                            tool_result_push(
+                                                &session_context,
+                                                &mut history.history,
+                                                Err(anyhow!(final_permission.1)),
+                                                tool,
+                                            )
+                                            .await;
+                                            continue;
+                                        }
+                                        PermissionLevel::Ask => {
+                                            let result = wait_permission_apply(
+                                                &app,
+                                                &mut session_context,
+                                                session_id,
+                                                shell,
+                                                tool_id,
+                                            )
+                                            .await;
+                                            match result {
+                                                Ok(value) => match value.result {
+                                                    PermissionResult::AlwaysAllow => {
+
+                                                        session_context
+                                                            .permission
+                                                            .ask_tools
+                                                            .remove(name);
+                                                        session_context
+                                                            .permission
+                                                            .allow_tools
+                                                            .insert(name.to_string());
+                                                    }
+                                                    PermissionResult::Deny => {
+                                                        tool_result_push(
+                                                            &session_context,
+                                                            &mut history.history,
+                                                            Err(anyhow!(value.reason)),
+                                                            tool,
+                                                        )
+                                                        .await;
+                                                        continue;
+                                                    }
+                                                    _ => {}
+                                                },
+                                                Err(err) => {
+                                                    tool_result_push(
+                                                        &session_context,
+                                                        &mut history.history,
+                                                        Err(anyhow!(err)),
+                                                        tool,
+                                                    )
+                                                    .await;
+                                                    continue;
+                                                }
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                    let result = shell.execute(input, &session_context);
+
+                                    tool_result_push(
+                                        &session_context,
+                                        &mut history.history,
+                                        result,
+                                        tool,
+                                    )
+                                    .await;
+                                } else if let Err(err) = input {
+                                    tool_result_push(
+                                        &session_context,
+                                        &mut history.history,
+                                        Err(err),
+                                        tool,
+                                    )
+                                    .await;
+                                }
+                            }
+                            _ => {
+                                tool_result_push(
+                                    &session_context,
+                                    &mut history.history,
+                                    anyhow::Ok(format!("该{}工具未实现", &tool.function.name)),
+                                    tool,
+                                )
+                                .await;
+                                println!("工具：{}，还没有实现", tool.function.name);
+                            }
+                        }
+                    }
+                    continue;
+                } else if let Some(response) = &first_content_message.content {
+                    println!(
+                        "========================================================================"
+                    );
+                    println!("{}", response);
+                    println!(
+                        "========================================================================"
+                    );
+
+                    let message = InputMessage {
+                        role: Role::Assistant,
+                        content: Some(response.clone()),
+                        reasoning_content: first_content_message.reasoning_content.clone(),
+                        tool_calls: None,
+                        tool_call_id: None,
+                        session_context: Some(session_context.clone()),
+                    };
+                    history.history.push(message.clone());
+                    let mut history_map = HISTORY_MAP.lock().await;
+                    history_map.insert(
+                        session_id.to_string(),
+                        Arc::new(Mutex::new(history.clone())),
+                    );
+                    let write_result = write_file(
+                        &app,
+                        format!("{}.jsonl", session_id.to_string()).as_str(),
+                        serde_json::to_string_pretty(&history.clone()).unwrap(),
+                    );
+                    if let Err(err) = write_result {
+                        println!("会话记录永久性存储失败：{}", err)
+                    }
+                    session_context.session_status.set(SessionStatus::Default);
+                    let mut session_context_map = SESSION_CONTEXT_MAP.lock().await;
+                    session_context_map.insert(session_id.to_string(), Arc::new(Mutex::new(session_context.clone())));
+                    return Ok(message.clone());
+                }
+
+                Err("响应为空".to_string())
+            }
+            WaitResult::Stop(result) => {
+                println!(
+                    "========================================================================"
+                );
+                println!("中止");
+                println!(
+                    "========================================================================"
+                );
+                let message = InputMessage {
+                    role: Role::Assistant,
+                    content: Some("被用户手动中止".to_string()),
+                    reasoning_content: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    session_context: Some(session_context.clone()),
+                };
+                history.history.push(message.clone());
+                let mut history_map = HISTORY_MAP.lock().await;
+                history_map.insert(
+                    session_id.to_string(),
+                    Arc::new(Mutex::new(history.clone())),
+                );
+                let write_result = write_file(
+                    &app,
+                    format!("{}.jsonl", session_id.to_string()).as_str(),
+                    serde_json::to_string_pretty(&history.clone()).unwrap(),
+                );
+                if let Err(err) = write_result {
+                    println!("会话记录永久性存储失败：{}", err)
+                }
+                session_context.session_status.set(SessionStatus::Default);
+                let mut session_context_map = SESSION_CONTEXT_MAP.lock().await;
+                session_context_map.insert(session_id.to_string(), Arc::new(Mutex::new(session_context.clone())));
+                Ok(message.clone())
+            }
+        }
     }
 }
 
