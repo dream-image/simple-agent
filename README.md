@@ -1,6 +1,6 @@
 # `simple-gent`
 
-简单的ReAct agent，以验证、实践所学，同时进行rust实践。
+简单的coding agent，以验证、实践所学，同时进行rust实践。
 
 # Tauri + React + Typescript
 
