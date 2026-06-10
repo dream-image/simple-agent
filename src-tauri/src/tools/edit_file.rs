@@ -8,7 +8,7 @@ use tauri::window::Effect;
 use crate::context::session_context::SessionContext;
 
 use crate::permission::{Permission, PermissionLevel};
-
+#[derive( Clone, Debug, Deserialize)]
 pub struct EditFile {}
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema)]

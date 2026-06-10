@@ -5,7 +5,9 @@ mod permission;
 mod prompt;
 pub mod tools;
 
-use crate::context::session_context::{SessionContext, SessionStatus, SessionStatusState, SESSION_CONTEXT_MAP};
+use crate::context::session_context::{
+    SessionContext, SessionStatus, SessionStatusState, SESSION_CONTEXT_MAP,
+};
 use crate::context::workspace::Workspace;
 use crate::event::{wait_permission_apply, PermissionResult};
 use crate::path::{init_data_dir, write_file};
@@ -425,6 +427,7 @@ async fn agent_call_stream(
     Ok(ai_response)
 }
 
+#[derive(Clone, Debug, Deserialize)]
 enum ToolsEnum {
     GetWeather(GetWeather),
     EditFile(EditFile),
@@ -457,7 +460,7 @@ async fn agent_init() -> Result<(), String> {
 
 #[tauri::command]
 async fn create_session(session_id: &str, project_dir: &str) -> Result<SessionContext, String> {
-    let session_context_value =SessionContext {
+    let session_context_value = SessionContext {
         token: 0,
         total_token: 100_0000,
         mode: Default::default(),
@@ -472,25 +475,24 @@ async fn create_session(session_id: &str, project_dir: &str) -> Result<SessionCo
     };
 
     let mut history_map = HISTORY_MAP.lock().await;
-    history_map
-        .entry(session_id.to_string())
-        .or_insert_with(|| {
-            Arc::new(Mutex::new(History {
-                history: vec![InputMessage {
-                    role: Role::System,
-                    content: Some(get_system_prompt(Some(&session_context_value))),
-                    reasoning_content: None,
-                    tool_calls: None,
-                    tool_call_id: None,
-                    session_context: None,
-                }],
-            }))
-        });
+    history_map.insert(
+        session_id.to_string(),
+        Arc::new(Mutex::new(History {
+            history: vec![InputMessage {
+                role: Role::System,
+                content: Some(get_system_prompt(Some(&session_context_value))),
+                reasoning_content: None,
+                tool_calls: None,
+                tool_call_id: None,
+                session_context: None,
+            }],
+        })),
+    );
+
     let mut session_context_map = SESSION_CONTEXT_MAP.lock().await;
-    let session_context=Arc::new(Mutex::new(session_context_value.clone()));
+    let session_context = Arc::new(Mutex::new(session_context_value.clone()));
     let _ = session_context_map
-        .entry(session_id.to_string())
-        .or_insert(session_context)
+        .insert(session_id.to_string(), session_context)
         .clone();
 
     Ok(session_context_value)
@@ -524,8 +526,10 @@ async fn set_permission_mode(
 async fn call_cancel(session_id: &str) -> Result<(), String> {
     println!("========================");
     println!("call cancel被调用了");
-    let session_context_map = SESSION_CONTEXT_MAP.lock().await;
-    let session_context = session_context_map.get(&session_id.to_string());
+    let session_context = {
+        let session_context_map = SESSION_CONTEXT_MAP.lock().await.clone();
+        session_context_map.get(&session_id.to_string()).cloned()
+    };
 
     if let Some(session) = session_context {
         let session = session.lock().await;
@@ -537,7 +541,8 @@ async fn call_cancel(session_id: &str) -> Result<(), String> {
         );
         Ok(())
     } else {
-        println!("========================");
+        println!( "session_status stop信号发布失败\
+        ========================");
         Err(format!("No history for session {}", session_id))
     }
 }
@@ -552,33 +557,33 @@ async fn wait_stop_or_agent(
     session_id: &str,
     history: &[InputMessage],
 ) -> WaitResult {
-    if session_context.session_status.is_stop() {
+    let mut status_rx = session_context.session_status.subscribe();
+    if status_rx.borrow().clone() == SessionStatus::Stop {
         return WaitResult::Stop(Ok(()));
     }
-    let mut status_rx=session_context.session_status.subscribe();
+
     let stream = agent_call_stream(app, session_id, history);
     tokio::pin!(stream);
-    loop{
+    loop {
         tokio::select! {
-        changed = status_rx.changed() => {
-            match changed {
-                 Err(err)=>{
-                     return  WaitResult::Stop( Err(anyhow!(err.to_string())))
-                }
-                Ok(v) =>{
-                    if *status_rx.borrow()== SessionStatus::Stop{
-                         return  WaitResult::Stop(Ok(()))
+            changed = status_rx.changed() => {
+                match changed {
+                     Err(err)=>{
+                         return  WaitResult::Stop( Err(anyhow!(err.to_string())))
                     }
+                    Ok(v) =>{
+                        if *status_rx.borrow()== SessionStatus::Stop{
+                             return  WaitResult::Stop(Ok(()))
+                        }
 
+                    }
                 }
             }
-        }
-        stream = &mut stream => {
-           return WaitResult::Continue(stream)
+            stream = &mut stream => {
+               return WaitResult::Continue(stream)
+            }
         }
     }
-    }
-
 }
 #[tauri::command]
 async fn call(app: AppHandle, session_id: &str, question: &str) -> Result<InputMessage, String> {
@@ -604,10 +609,9 @@ async fn call(app: AppHandle, session_id: &str, question: &str) -> Result<InputM
     };
     {
         let mut session_context_map = SESSION_CONTEXT_MAP.lock().await;
-        let _ =session_context_map
+        let _ = session_context_map
             .entry(session_id.to_string())
             .or_insert(Arc::new(Mutex::new(SessionContext::new(None, None))));
-
     };
 
     let tool_result_push = async |session_context: &SessionContext,
@@ -641,7 +645,7 @@ async fn call(app: AppHandle, session_id: &str, question: &str) -> Result<InputM
     };
     let mut session_context = {
         let mut session_context_map = SESSION_CONTEXT_MAP.lock().await;
-        let session_context=session_context_map
+        let session_context = session_context_map
             .entry(session_id.to_string())
             .or_insert(Arc::new(Mutex::new(SessionContext::new(None, None))))
             .clone();
@@ -650,20 +654,12 @@ async fn call(app: AppHandle, session_id: &str, question: &str) -> Result<InputM
         session_context.clone()
     };
     loop {
-
-        let wait_result ={
-            wait_stop_or_agent(
-                &mut session_context,
-                &app,
-                session_id,
-                &history.history,
-            ).await
-        };
+        let wait_result =
+            { wait_stop_or_agent(&mut session_context, &app, session_id, &history.history).await };
         // let mut session_context = session_context.clone();
         return match wait_result {
             WaitResult::Continue(result) => {
-                let res = result
-                    .map_err(|err| err.to_string())?;
+                let res = result.map_err(|err| err.to_string())?;
                 {
                     session_context.add_token(res.usage.total_tokens);
                     println!(
@@ -678,7 +674,6 @@ async fn call(app: AppHandle, session_id: &str, question: &str) -> Result<InputM
                     .ok_or_else(|| "响应为空".to_string())?
                     .message;
                 if let Some(tool_calls) = &first_content_message.tool_calls {
-
                     history.history.push(InputMessage {
                         role: Role::Assistant,
                         content: first_content_message.content.clone(),
@@ -687,7 +682,7 @@ async fn call(app: AppHandle, session_id: &str, question: &str) -> Result<InputM
                         tool_call_id: None,
                         session_context: Some(session_context.clone()),
                     });
-                    let tools_map = TOOLS_MAP.lock().await;
+                    let tools_map = TOOLS_MAP.lock().await.clone();
                     for tool in tool_calls {
                         let name = tool.function.name.as_str();
                         let tool_id = tool.id.as_str();
@@ -700,8 +695,8 @@ async fn call(app: AppHandle, session_id: &str, question: &str) -> Result<InputM
                                 )
                                 .map_err(|err| anyhow!(err));
                                 if let Ok(input) = input {
-                                    let tool_permission = get_weather
-                                        .check_permission(&input, &session_context);
+                                    let tool_permission =
+                                        get_weather.check_permission(&input, &session_context);
                                     let final_permission = check_final_permission(
                                         &tool_pre_permission,
                                         &tool_permission,
@@ -731,7 +726,6 @@ async fn call(app: AppHandle, session_id: &str, question: &str) -> Result<InputM
                                             match result {
                                                 Ok(value) => match value.result {
                                                     PermissionResult::AlwaysAllow => {
-
                                                         session_context
                                                             .permission
                                                             .ask_tools
@@ -767,8 +761,7 @@ async fn call(app: AppHandle, session_id: &str, question: &str) -> Result<InputM
                                         }
                                         _ => {}
                                     }
-                                    let result =
-                                        get_weather.execute(input, &session_context);
+                                    let result = get_weather.execute(input, &session_context);
 
                                     tool_result_push(
                                         &session_context,
@@ -792,8 +785,8 @@ async fn call(app: AppHandle, session_id: &str, question: &str) -> Result<InputM
                                     serde_json::from_str::<EditFileInput>(&tool.function.arguments)
                                         .map_err(|err| anyhow!(err));
                                 if let Ok(input) = input {
-                                    let tool_permission = edit_file
-                                        .check_permission(&input, &session_context);
+                                    let tool_permission =
+                                        edit_file.check_permission(&input, &session_context);
                                     let final_permission = check_final_permission(
                                         &tool_pre_permission,
                                         &tool_permission,
@@ -858,8 +851,7 @@ async fn call(app: AppHandle, session_id: &str, question: &str) -> Result<InputM
                                         }
                                         _ => {}
                                     }
-                                    let result =
-                                        edit_file.execute(input, &session_context);
+                                    let result = edit_file.execute(input, &session_context);
 
                                     tool_result_push(
                                         &session_context,
@@ -883,8 +875,8 @@ async fn call(app: AppHandle, session_id: &str, question: &str) -> Result<InputM
                                     serde_json::from_str::<ReadFileInput>(&tool.function.arguments)
                                         .map_err(|err| anyhow!(err));
                                 if let Ok(input) = input {
-                                    let tool_permission = read_file
-                                        .check_permission(&input, &session_context);
+                                    let tool_permission =
+                                        read_file.check_permission(&input, &session_context);
                                     let final_permission = check_final_permission(
                                         &tool_pre_permission,
                                         &tool_permission,
@@ -914,7 +906,6 @@ async fn call(app: AppHandle, session_id: &str, question: &str) -> Result<InputM
                                             match result {
                                                 Ok(value) => match value.result {
                                                     PermissionResult::AlwaysAllow => {
-
                                                         session_context
                                                             .permission
                                                             .ask_tools
@@ -950,8 +941,7 @@ async fn call(app: AppHandle, session_id: &str, question: &str) -> Result<InputM
                                         }
                                         _ => {}
                                     }
-                                    let result =
-                                        read_file.execute(input, &session_context);
+                                    let result = read_file.execute(input, &session_context);
 
                                     tool_result_push(
                                         &session_context,
@@ -1006,7 +996,6 @@ async fn call(app: AppHandle, session_id: &str, question: &str) -> Result<InputM
                                             match result {
                                                 Ok(value) => match value.result {
                                                     PermissionResult::AlwaysAllow => {
-
                                                         session_context
                                                             .permission
                                                             .ask_tools
@@ -1107,7 +1096,10 @@ async fn call(app: AppHandle, session_id: &str, question: &str) -> Result<InputM
                     }
                     session_context.session_status.set(SessionStatus::Default);
                     let mut session_context_map = SESSION_CONTEXT_MAP.lock().await;
-                    session_context_map.insert(session_id.to_string(), Arc::new(Mutex::new(session_context.clone())));
+                    session_context_map.insert(
+                        session_id.to_string(),
+                        Arc::new(Mutex::new(session_context.clone())),
+                    );
                     return Ok(message.clone());
                 }
 
@@ -1145,10 +1137,13 @@ async fn call(app: AppHandle, session_id: &str, question: &str) -> Result<InputM
                 }
                 session_context.session_status.set(SessionStatus::Default);
                 let mut session_context_map = SESSION_CONTEXT_MAP.lock().await;
-                session_context_map.insert(session_id.to_string(), Arc::new(Mutex::new(session_context.clone())));
+                session_context_map.insert(
+                    session_id.to_string(),
+                    Arc::new(Mutex::new(session_context.clone())),
+                );
                 Ok(message.clone())
             }
-        }
+        };
     }
 }
 

@@ -6,7 +6,7 @@ use std::path::{ PathBuf};
 use crate::context::session_context::SessionContext;
 
 use crate::permission::{Permission, PermissionLevel};
-
+#[derive( Clone, Debug, Deserialize)]
 pub struct ReadFile {}
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema)]

@@ -3,7 +3,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use crate::context::session_context::SessionContext;
 use crate::permission::{Permission, PermissionLevel};
-
+#[derive( Clone, Debug, Deserialize)]
 pub struct GetWeather {}
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema)]

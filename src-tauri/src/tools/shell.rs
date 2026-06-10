@@ -5,7 +5,7 @@ use anyhow::anyhow;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::process::Command;
-
+#[derive( Clone, Debug, Deserialize)]
 pub struct Shell {}
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema)]
