@@ -337,87 +337,103 @@ async fn agent_call_stream(
         session_context: None,
     };
     let mut finish_reason = "stop".to_string();
-    while let Some(event) = events.next().await {
-        let event = event?;
-        let _ = app.emit(
-            "agent_stream",
-            AgentStreamEvent {
-                session_id: session_id.to_string(),
-                data: event.data.clone(),
-            },
-        );
-        if event.data == "[DONE]" {
-            break;
-        }
-        // println!("{:?}", event.data);
-        let value = serde_json::from_str::<AiStreamResponse>(&event.data)?;
-        ai_response.id = value.id;
-        ai_response.model = value.model;
-        ai_response.object = value.object;
-        if let Some(usage) = value.usage {
-            ai_response.usage = usage;
-        }
-
-        let Some(choice) = value.choices.first() else {
-            continue;
-        };
-        if let Some(reason) = choice.finish_reason.clone() {
-            finish_reason = reason;
-            continue;
-        }
-        let delta = &choice.delta;
-        match delta {
-            Delta::SessionStart(data) => {
-                input_message.role = data.role.clone();
-            }
-            Delta::Thinking(data) => {
-                input_message
-                    .reasoning_content
-                    .get_or_insert_default()
-                    .push_str(data.reasoning_content.as_str());
-            }
-            Delta::Content(data) => {
-                input_message
-                    .content
-                    .get_or_insert_default()
-                    .push_str(data.content.as_str());
-            }
-            Delta::ToolCalls(data) => {
-                let list = input_message.tool_calls.get_or_insert_default();
-                for item in data {
-                    let tool = if let Some(index) =
-                        list.iter().position(|tool| tool.index == item.index)
-                    {
-                        &mut list[index]
-                    } else {
-                        list.push(ToolCall {
-                            index: item.index,
-                            id: item.id.clone().unwrap_or_default(),
-                            r#type: item
-                                .r#type
-                                .clone()
-                                .unwrap_or_else(|| "function".to_string()),
-                            function: Default::default(),
-                        });
-                        list.last_mut().unwrap()
-                    };
-                    if let Some(id) = &item.id {
-                        tool.id = id.clone();
-                    }
-                    if let Some(r#type) = &item.r#type {
-                        tool.r#type = r#type.clone();
-                    }
-                    if let Some(name) = &item.function.name {
-                        tool.function.name = name.clone();
-                    }
-                    if let Some(arguments) = &item.function.arguments {
-                        tool.function.arguments.push_str(arguments);
-                    }
+    let mut has_received = false;
+    loop{
+        let event = events.next().await;
+        match event {
+            Some(Ok(event))=>{
+                has_received=true;
+                let _ = app.emit(
+                    "agent_stream",
+                    AgentStreamEvent {
+                        session_id: session_id.to_string(),
+                        data: event.data.clone(),
+                    },
+                );
+                if event.data == "[DONE]" {
+                    break;
                 }
+                // println!("{:?}", event.data);
+                let value = serde_json::from_str::<AiStreamResponse>(&event.data)?;
+                ai_response.id = value.id;
+                ai_response.model = value.model;
+                ai_response.object = value.object;
+                if let Some(usage) = value.usage {
+                    ai_response.usage = usage;
+                }
+
+                let Some(choice) = value.choices.first() else {
+                    continue;
+                };
+                if let Some(reason) = choice.finish_reason.clone() {
+                    finish_reason = reason;
+                    continue;
+                }
+                let delta = &choice.delta;
+                match delta {
+                    Delta::SessionStart(data) => {
+                        input_message.role = data.role.clone();
+                    }
+                    Delta::Thinking(data) => {
+                        input_message
+                            .reasoning_content
+                            .get_or_insert_default()
+                            .push_str(data.reasoning_content.as_str());
+                    }
+                    Delta::Content(data) => {
+                        input_message
+                            .content
+                            .get_or_insert_default()
+                            .push_str(data.content.as_str());
+                    }
+                    Delta::ToolCalls(data) => {
+                        let list = input_message.tool_calls.get_or_insert_default();
+                        for item in data {
+                            let tool = if let Some(index) =
+                                list.iter().position(|tool| tool.index == item.index)
+                            {
+                                &mut list[index]
+                            } else {
+                                list.push(ToolCall {
+                                    index: item.index,
+                                    id: item.id.clone().unwrap_or_default(),
+                                    r#type: item
+                                        .r#type
+                                        .clone()
+                                        .unwrap_or_else(|| "function".to_string()),
+                                    function: Default::default(),
+                                });
+                                list.last_mut().unwrap()
+                            };
+                            if let Some(id) = &item.id {
+                                tool.id = id.clone();
+                            }
+                            if let Some(r#type) = &item.r#type {
+                                tool.r#type = r#type.clone();
+                            }
+                            if let Some(name) = &item.function.name {
+                                tool.function.name = name.clone();
+                            }
+                            if let Some(arguments) = &item.function.arguments {
+                                tool.function.arguments.push_str(arguments);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            },
+            Some(Err(e))=>{
+                if has_received {
+                    break;
+                }
+                return Err(anyhow!("sse流处理失败:{}",e.to_string()))
+            },
+            None =>{
+                break;
             }
-            _ => {}
         }
-    }
+    };
+
 
     ai_response.choices = vec![Choice {
         finish_reason,

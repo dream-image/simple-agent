@@ -488,7 +488,7 @@ function App() {
     const [sessions, setSessions] = useState<ChatSession[]>([firstSession]);
     const [activeKey, setActiveKey] = useState(firstSession.key);
     const [input, setInput] = useState("");
-    const [loadingSession, setLoadingSession] = useState<string | null>(null);
+    const [loadingSessions, setLoadingSessions] = useState<string[]>([]);
     const [ready, setReady] = useState(false);
     const [bootError, setBootError] = useState("");
     const [permissionQueue, setPermissionQueue] = useState<PermissionRequest[]>([]);
@@ -586,6 +586,7 @@ function App() {
     }, [firstSession.key]);
 
     const activeSession = sessions.find((item) => item.key === activeKey);
+    const activeSessionLoading = loadingSessions.includes(activeKey);
     const tokenPercent = getTokenPercent(activeSession?.sessionContext);
     const tokenRingStyle = {
         "--token-percent": `${tokenPercent}%`,
@@ -1107,7 +1108,7 @@ function App() {
     const handleSubmit = async (message: string) => {
         const question = message.trim();
 
-        if (!question || !ready || loadingSession) {
+        if (!question || !ready || loadingSessions.includes(activeKey)) {
             return;
         }
 
@@ -1127,7 +1128,9 @@ function App() {
 
         streamTargetRef.current[sessionId] = assistantMessage.id;
         setInput("");
-        setLoadingSession(sessionId);
+        setLoadingSessions((current) =>
+            current.includes(sessionId) ? current : [...current, sessionId],
+        );
         setSessions((current) =>
             current.map((session) => {
                 if (session.key !== sessionId) {
@@ -1219,14 +1222,14 @@ function App() {
         } finally {
             cleanupPermissionListeners(sessionId);
             delete streamTargetRef.current[sessionId];
-            setLoadingSession((current) => (current === sessionId ? null : current));
+            setLoadingSessions((current) => current.filter((item) => item !== sessionId));
         }
     };
 
     const handleCancel = async () => {
-        const sessionId = loadingSession;
+        const sessionId = activeKey;
 
-        if (!sessionId) {
+        if (!loadingSessions.includes(sessionId)) {
             return;
         }
 
@@ -1470,8 +1473,8 @@ function App() {
                         <div className="sender-wrap">
                             <Sender
                                 value={input}
-                                loading={loadingSession === activeKey}
-                                disabled={!ready || (Boolean(loadingSession) && loadingSession !== activeKey)}
+                                loading={activeSessionLoading}
+                                disabled={!ready}
                                 placeholder={ready ? "输入消息" : "初始化中"}
                                 submitType="enter"
                                 onChange={setInput}
