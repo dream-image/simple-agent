@@ -1,3 +1,7 @@
+# `simple-gent`
+
+简单的ReAct agent，以验证、实践所学，同时进行rust实践。
+
 # Tauri + React + Typescript
 
 This template should help get you started developing with Tauri, React and Typescript in Vite.
