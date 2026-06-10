@@ -32,4 +32,4 @@ tokio-stream = "0.1.18"
 eventsource-stream = "0.2.3"
 tauri-plugin-dialog = "2"
 directories = "6.0.0"
-
+dotenvy = "0.15.7"

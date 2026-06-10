@@ -36,6 +36,18 @@ use tokio::sync::{watch, Mutex, MutexGuard};
 use tokio_stream::StreamExt;
 use tools::get_weather::GetWeather;
 
+const DEEPSEEK_API_KEY_ENV: &str = "DEEPSEEK_API_KEY";
+
+fn load_env() {
+    let _ = dotenvy::dotenv();
+}
+
+fn deepseek_auth_header() -> anyhow::Result<String> {
+    let api_key = std::env::var(DEEPSEEK_API_KEY_ENV)
+        .with_context(|| format!("缺少环境变量：{}", DEEPSEEK_API_KEY_ENV))?;
+    Ok(format!("Bearer {}", api_key))
+}
+
 #[derive(Default, serde::Serialize, Clone, Debug, Deserialize, Ord, PartialOrd, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 enum Role {
@@ -248,6 +260,7 @@ impl From<&InputMessage> for ChatMessage {
 }
 
 async fn agent_call(history: &[ChatMessage]) -> anyhow::Result<AiResponse> {
+    let authorization = deepseek_auth_header()?;
     let body_json = json!({
          "model": "deepseek-v4-pro",
          "messages": history,
@@ -269,10 +282,7 @@ async fn agent_call(history: &[ChatMessage]) -> anyhow::Result<AiResponse> {
         .post("https://api.deepseek.com/chat/completions")
         .timeout(Duration::from_secs(30))
         .header("Content-Type", "application/json")
-        .header(
-            "Authorization",
-            "Bearer sk-55d4dad8ca5e4f7fb95b24d952a55504",
-        )
+        .header("Authorization", authorization)
         .json(&body_json)
         .send()
         .await?
@@ -291,6 +301,7 @@ async fn agent_call_stream(
     session_id: &str,
     history: &[InputMessage],
 ) -> anyhow::Result<AiResponse> {
+    let authorization = deepseek_auth_header()?;
     let filter_role = vec![Role::Tool, Role::User, Role::System, Role::Assistant];
     let chat_message: Vec<ChatMessage> = history
         .iter()
@@ -317,10 +328,7 @@ async fn agent_call_stream(
         .post("https://api.deepseek.com/chat/completions")
         .timeout(Duration::from_secs(30))
         .header("Content-Type", "application/json")
-        .header(
-            "Authorization",
-            "Bearer sk-55d4dad8ca5e4f7fb95b24d952a55504",
-        )
+        .header("Authorization", authorization)
         .json(&body_json)
         .send()
         .await?
@@ -1165,6 +1173,7 @@ async fn call(app: AppHandle, session_id: &str, question: &str) -> Result<InputM
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    load_env();
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
