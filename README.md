@@ -67,3 +67,9 @@ This template should help get you started developing with Tauri, React and Types
 - 会话历史写入 Tauri app data 目录
 - 当前请求取消
 - 基于 `watch::Sender<SessionStatus>` 的会话状态通知
+
+
+# 预览图
+![图1](https://w2.eckwai.com/kos/nlav12333/trade-assets/fiqjlo0q7n.9702eb6c59b6f496.png)
+![图2](https://w2.eckwai.com/kos/nlav12333/trade-assets/yf8zag4pex.47737ad5807e0e00.png)
+![图3](https://w2.eckwai.com/kos/nlav12333/trade-assets/itemv853t4.b5aed0d4a64c7be7.png)
